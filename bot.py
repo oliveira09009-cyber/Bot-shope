@@ -248,7 +248,7 @@ def publicador_automatico():
 
             print("❌ Erro:", erro)
 
-        print("💤 Aguardando {intervalo}  segundos...")
+        print(f"💤 Aguardando {INTERVALO} segundos...")
 
         time.sleep(INTERVALO)
 
