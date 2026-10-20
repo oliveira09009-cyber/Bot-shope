@@ -12,7 +12,7 @@ import threading
 TOKEN = "8262222708:AAGHH1nAtDGMKiNmvemrfnGoodag7ioRRQY"
 CHAT_ID = "-1003905816059"
 
-INTERVALO = 30
+INTERVALO = 3600
 ARQUIVO_FILA = "fila.json"
 
 
@@ -598,7 +598,7 @@ def iniciar_bot():
 
             print("❌ Erro:", erro)
 
-            time.sleep(5)
+            time.sleep(60)
 
 
 # ==========================================
