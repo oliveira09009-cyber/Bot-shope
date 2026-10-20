@@ -12,7 +12,7 @@ import threading
 TOKEN = "8262222708:AAGHH1nAtDGMKiNmvemrfnGoodag7ioRRQY"
 CHAT_ID = "-1003905816059"
 
-INTERVALO = 30
+INTERVALO = 3600
 ARQUIVO_FILA = "fila.json"
 
 
@@ -236,7 +236,7 @@ def publicar_proximo():
 def publicador_automatico():
 
     print("🚀 Publicador automático iniciado.")
-    print("⏰ Intervalo: 1 hora.")
+    print("⏰ Intervalo: segundos.")
 
     while True:
 
@@ -248,7 +248,7 @@ def publicador_automatico():
 
             print("❌ Erro:", erro)
 
-        print("💤 Aguardando 1 hora...")
+        print("💤 Aguardando  segundos...")
 
         time.sleep(INTERVALO)
 
