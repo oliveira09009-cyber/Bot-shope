@@ -598,7 +598,7 @@ def iniciar_bot():
 
             print("❌ Erro:", erro)
 
-            time.sleep(60)
+            time.sleep(5)
 
 
 # ==========================================
