@@ -12,7 +12,7 @@ import threading
 TOKEN = "8262222708:AAGHH1nAtDGMKiNmvemrfnGoodag7ioRRQY"
 CHAT_ID = "-1003905816059"
 
-INTERVALO = 3600
+INTERVALO = 30
 ARQUIVO_FILA = "fila.json"
 
 
