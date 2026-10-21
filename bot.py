@@ -236,7 +236,7 @@ def publicar_proximo():
 def publicador_automatico():
 
     print("🚀 Publicador automático iniciado.")
-    print("⏰ {intervalo}segundos.")
+    print("⏰ Intervalo: 1 hora.")
 
     while True:
 
@@ -248,7 +248,7 @@ def publicador_automatico():
 
             print("❌ Erro:", erro)
 
-        print(f"💤 Aguardando {INTERVALO} segundos...")
+        print("💤 Aguardando 1 hora...")
 
         time.sleep(INTERVALO)
 
