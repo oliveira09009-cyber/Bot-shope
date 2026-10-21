@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # CONFIGURAÇÕES (vêm das variáveis do Render)
 # ==========================================
 
-TOKEN = os.environ["8262222708:AAGHH1nAtDGMKiNmvemrfnGoodag7ioRRQY"]
+TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 REDIS_URL = os.environ["UPSTASH_REDIS_REST_URL"]
 REDIS_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
