@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # ==========================================
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+CHAT_ID = os.environ.get("CHAT_ID", "-1003905816059")
 REDIS_URL = os.environ["UPSTASH_REDIS_REST_URL"]
 REDIS_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
 ADMIN_ID = os.environ.get("ADMIN_ID")  # opcional: só você pode usar o bot
