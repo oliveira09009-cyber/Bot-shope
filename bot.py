@@ -96,7 +96,7 @@ def publicar_proximo():
     link = produto["link"]
     imagem = produto.get("imagem")
 
-    legenda =     legenda = f"""🔥 ACHADINHO DA SHOPEE 🔥
+legenda = f"""🔥 ACHADINHO DA SHOPEE 🔥
 
 🛍️ {nome}
 
