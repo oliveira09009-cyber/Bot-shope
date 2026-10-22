@@ -96,11 +96,16 @@ def publicar_proximo():
     link = produto["link"]
     imagem = produto.get("imagem")
 
-    legenda = f"""🔥 ACHADINHO DA SHOPEE
+    legenda =     legenda = f"""🔥 ACHADINHO DA SHOPEE 🔥
 
-🛒 {nome}
+🛍️ {nome}
 
-💰 Confira o preço e as opções disponíveis!"""
+💰 OFERTA ESPECIAL
+⚡ Aproveite enquanto estiver disponível!
+
+👇 Clique abaixo para conferir:
+
+🛒 COMPRAR AGORA"""
 
     teclado = {
         "inline_keyboard": [
