@@ -15,7 +15,7 @@ REDIS_URL = os.environ["UPSTASH_REDIS_REST_URL"]
 REDIS_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
 ADMIN_ID = os.environ.get("ADMIN_ID")  # opcional: só você pode usar o bot
 
-INTERVALO = 3600
+INTERVALO = 760
 
 
 # ==========================================
@@ -416,7 +416,7 @@ if __name__ == "__main__":
 
     print("======================================")
     print("✅ SISTEMA COMPLETO ATIVO")
-    print("⏰ 1 PRODUTO POR HORA")
+    print("⏰ 5 PRODUTO POR HORA")
     print("======================================")
 
     # O bot roda na thread principal: o programa NÃO encerra mais
