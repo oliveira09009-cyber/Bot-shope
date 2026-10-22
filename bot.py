@@ -233,7 +233,7 @@ def procurar_produto_jsonld(dados):
     return nome, imagem, preco
 
 
-def extrair_dados_shopee(link):
+ def extrair_dados_shopee(link):
 
     print("🔎 Analisando Shopee:")
     print(link)
@@ -245,7 +245,13 @@ def extrair_dados_shopee(link):
             "(KHTML, like Gecko) "
             "Chrome/120.0 Mobile Safari/537.36"
         ),
-        "Accept-Language": "pt-BR,pt;q=0.9"
+        "Accept": (
+            "text/html,application/xhtml+xml,"
+            "application/xml;q=0.9,image/avif,image/webp,"
+            "image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "pt-BR,pt;q=0.9",
+        "Referer": "https://shopee.com.br/"
     }
 
     try:
@@ -275,9 +281,9 @@ def extrair_dados_shopee(link):
         return None, None, None
 
 
-    # ------------------------------------------
-    # 1. OPEN GRAPH
-    # ------------------------------------------
+    # ==========================================
+    # OPEN GRAPH
+    # ==========================================
 
     nome = extrair_meta(
         html,
@@ -290,9 +296,9 @@ def extrair_dados_shopee(link):
     )
 
 
-    # ------------------------------------------
-    # 2. JSON-LD
-    # ------------------------------------------
+    # ==========================================
+    # JSON-LD
+    # ==========================================
 
     jsonld = extrair_jsonld(html)
 
@@ -301,12 +307,12 @@ def extrair_dados_shopee(link):
     )
 
 
-    if not nome and nome_json:
+    if nome_json:
 
         nome = nome_json
 
 
-    if not imagem and imagem_json:
+    if imagem_json:
 
         if isinstance(imagem_json, list):
 
@@ -322,9 +328,9 @@ def extrair_dados_shopee(link):
     preco = preco_json
 
 
-    # ------------------------------------------
-    # 3. TENTATIVA DE PREÇO NO HTML
-    # ------------------------------------------
+    # ==========================================
+    # TENTAR ENCONTRAR PREÇO
+    # ==========================================
 
     if not preco:
 
@@ -336,7 +342,11 @@ def extrair_dados_shopee(link):
 
             r'"salePrice"\s*:\s*"([^"]+)"',
 
-            r'"sale_price"\s*:\s*"([^"]+)"'
+            r'"sale_price"\s*:\s*"([^"]+)"',
+
+            r'"current_price"\s*:\s*"([^"]+)"',
+
+            r'"currentPrice"\s*:\s*"([^"]+)"'
 
         ]
 
@@ -355,11 +365,13 @@ def extrair_dados_shopee(link):
                 break
 
 
-    # ------------------------------------------
-    # 4. LIMPEZA
-    # ------------------------------------------
+    # ==========================================
+    # LIMPAR NOME
+    # ==========================================
 
     if nome:
+
+        nome = unescape(str(nome))
 
         nome = re.sub(
             r"\s+",
@@ -368,29 +380,81 @@ def extrair_dados_shopee(link):
         ).strip()
 
 
+    # ==========================================
+    # NÃO ACEITAR NOME DA PÁGINA INICIAL
+    # ==========================================
+
+    nomes_invalidos = [
+
+        "Shopee Brasil | Ofertas incríveis. Melhores preços do mercado",
+
+        "Shopee Brasil",
+
+        "Ofertas incríveis. Melhores preços do mercado",
+
+        "Shopee"
+
+    ]
+
+    if nome:
+
+        nome_normalizado = nome.lower().strip()
+
+        for nome_invalido in nomes_invalidos:
+
+            if nome_normalizado == nome_invalido.lower():
+
+                print(
+                    "⚠️ Nome encontrado é da página inicial."
+                )
+
+                nome = None
+
+                break
+
+
+    # ==========================================
+    # LIMPAR PREÇO
+    # ==========================================
+
     if preco:
 
         preco = str(preco).strip()
 
-        if preco.replace(".", "", 1).isdigit():
+        try:
 
-            try:
+            valor = float(
+                preco.replace("R$", "")
+                     .replace(" ", "")
+                     .replace(",", ".")
+            )
 
-                valor = float(preco)
+            preco = (
+                f"R$ {valor:.2f}"
+                .replace(".", ",")
+            )
 
-                preco = f"R$ {valor:.2f}".replace(
-                    ".",
-                    ","
-                )
+        except Exception:
 
-            except Exception:
-
-                pass
+            pass
 
 
-    # ------------------------------------------
+    # ==========================================
+    # VALIDAR IMAGEM
+    # ==========================================
+
+    if imagem:
+
+        imagem = str(imagem).strip()
+
+        if not imagem.startswith("http"):
+
+            imagem = None
+
+
+    # ==========================================
     # RESULTADO
-    # ------------------------------------------
+    # ==========================================
 
     print("")
     print("🔎 DADOS ENCONTRADOS:")
@@ -401,7 +465,7 @@ def extrair_dados_shopee(link):
 
     print("")
 
-    return nome, preco, imagem
+    return nome, preco, imagem  
 
 
 # ==========================================
