@@ -235,293 +235,350 @@ def procurar_produto_jsonld(dados):
 
 def extrair_dados_shopee(link):
 
-    print("🔎 Analisando Shopee:")
+    print("🔎 ABRINDO SHOPEE NO NAVEGADOR:")
     print(link)
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 10; K) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/120.0 Mobile Safari/537.36"
-        ),
-        "Accept": (
-            "text/html,application/xhtml+xml,"
-            "application/xml;q=0.9,image/avif,image/webp,"
-            "image/apng,*/*;q=0.8"
-        ),
-        "Accept-Language": "pt-BR,pt;q=0.9",
-        "Referer": "https://shopee.com.br/"
-    }
-
-    try:
-
-        resposta = requests.get(
-            link,
-            headers=headers,
-            timeout=30,
-            allow_redirects=True
-        )
-
-        print("📡 Status:", resposta.status_code)
-        print("🔗 URL final:", resposta.url)
-
-        if resposta.status_code != 200:
-            return None, None, None
-
-        html = resposta.text
-
-        print("📄 HTML:", len(html), "caracteres")
-
-    except Exception as erro:
-
-        print("❌ Erro ao acessar Shopee:", erro)
-
-        return None, None, None
-
-
-    # ==========================================
-    # VALORES INICIAIS
-    # ==========================================
 
     nome = None
     preco = None
     imagem = None
 
+    try:
+        from playwright.sync_api import sync_playwright
 
-    # ==========================================
-    # OPEN GRAPH
-    # ==========================================
+        with sync_playwright() as p:
 
-    nome_og = extrair_meta(html, "og:title")
-    imagem_og = extrair_meta(html, "og:image")
-
-
-    # ==========================================
-    # NÃO ACEITAR PÁGINA INICIAL
-    # ==========================================
-
-    nomes_invalidos = [
-        "Shopee Brasil | Ofertas incríveis. Melhores preços do mercado",
-        "Shopee Brasil",
-        "Ofertas incríveis. Melhores preços do mercado",
-        "Shopee"
-    ]
-
-    if nome_og:
-
-        nome_og = unescape(str(nome_og))
-
-        nome_og = re.sub(
-            r"\s+",
-            " ",
-            nome_og
-        ).strip()
-
-        nome_normalizado = nome_og.lower()
-
-        if not any(
-            nome_normalizado == invalido.lower()
-            for invalido in nomes_invalidos
-        ):
-
-            nome = nome_og
-
-        else:
-
-            print(
-                "⚠️ og:title pertence à página inicial."
+            navegador = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu"
+                ]
             )
 
-
-    # ==========================================
-    # IMAGEM
-    # ==========================================
-
-    if imagem_og:
-
-        imagem = imagem_og
-
-
-    # ==========================================
-    # JSON-LD
-    # ==========================================
-
-    jsonld = extrair_jsonld(html)
-
-    nome_json, imagem_json, preco_json = (
-        procurar_produto_jsonld(jsonld)
-    )
-
-
-    if nome_json:
-
-        nome_json = unescape(str(nome_json))
-
-        nome_json = re.sub(
-            r"\s+",
-            " ",
-            nome_json
-        ).strip()
-
-        nome_normalizado = nome_json.lower()
-
-        if not any(
-            nome_normalizado == invalido.lower()
-            for invalido in nomes_invalidos
-        ):
-
-            nome = nome_json
-
-
-    if imagem_json:
-
-        if isinstance(imagem_json, list):
-
-            if imagem_json:
-
-                imagem = imagem_json[0]
-
-        else:
-
-            imagem = imagem_json
-
-
-    if preco_json:
-
-        preco = preco_json
-
-        print(
-            "💰 Preço encontrado no JSON-LD:",
-            preco
-        )
-
-
-    # ==========================================
-    # EXTRAÇÃO DE PREÇO
-    # ==========================================
-
-    if not preco:
-
-        padroes_preco = [
-
-            # price
-            r'"price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # salePrice
-            r'"salePrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"salePrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # sale_price
-            r'"sale_price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"sale_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # currentPrice
-            r'"currentPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"currentPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # current_price
-            r'"current_price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"current_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # minPrice
-            r'"minPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"minPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # maxPrice
-            r'"maxPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"maxPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # priceMin
-            r'"priceMin"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"priceMin"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # priceMax
-            r'"priceMax"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"priceMax"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # salePriceMin
-            r'"salePriceMin"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"salePriceMin"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
-            # salePriceMax
-            r'"salePriceMax"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-            r'"salePriceMax"\s*:\s*([0-9]+(?:\.[0-9]+)?)'
-        ]
-
-
-        for padrao in padroes_preco:
-
-            resultado = re.search(
-                padrao,
-                html,
-                re.IGNORECASE
+            pagina = navegador.new_page(
+                viewport={
+                    "width": 1280,
+                    "height": 900
+                },
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                locale="pt-BR"
             )
 
-            if resultado:
+            pagina.set_default_timeout(15000)
 
-                valor_encontrado = resultado.group(1)
+            print("🌐 Carregando página...")
 
-                try:
-
-                    valor = float(
-                        valor_encontrado.replace(",", ".")
-                    )
-
-                    # Evita números absurdos
-                    if 0 < valor < 1000000:
-
-                        preco = valor_encontrado
-
-                        print(
-                            "💰 Preço encontrado no HTML:",
-                            preco
-                        )
-
-                        break
-
-                except Exception:
-
-                    continue
-
-
-    # ==========================================
-    # TENTAR ENCONTRAR PREÇO FORMATADO
-    # ==========================================
-
-    if not preco:
-
-        padroes_formatados = [
-
-            r'R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})',
-
-            r'R\$\s*([0-9]+,[0-9]{2})',
-
-            r'BRL\s*([0-9]+(?:[.,][0-9]{2})?)'
-
-        ]
-
-
-        for padrao in padroes_formatados:
-
-            resultado = re.search(
-                padrao,
-                html,
-                re.IGNORECASE
+            resposta = pagina.goto(
+                link,
+                wait_until="domcontentloaded",
+                timeout=30000
             )
 
-            if resultado:
-
-                preco = resultado.group(1)
-
+            if resposta:
                 print(
-                    "💰 Preço formatado encontrado:",
-                    preco
+                    "📡 Status:",
+                    resposta.status
                 )
 
-                break
+            # Dá tempo para a Shopee carregar os dados
+            pagina.wait_for_timeout(7000)
 
+            # ==========================================
+            # TEXTO VISÍVEL DA PÁGINA
+            # ==========================================
+
+            try:
+                texto = pagina.locator("body").inner_text(
+                    timeout=10000
+                )
+            except Exception:
+                texto = ""
+
+            print(
+                "📄 Texto carregado:",
+                len(texto),
+                "caracteres"
+            )
+
+            # ==========================================
+            # HTML COMPLETO APÓS JAVASCRIPT
+            # ==========================================
+
+            try:
+                html = pagina.content()
+            except Exception:
+                html = ""
+
+            print(
+                "📄 HTML final:",
+                len(html),
+                "caracteres"
+            )
+
+            # ==========================================
+            # NOME
+            # ==========================================
+
+            try:
+
+                titulo = pagina.locator(
+                    'meta[property="og:title"]'
+                ).get_attribute("content")
+
+                if titulo:
+                    titulo = unescape(titulo).strip()
+
+                    if titulo.lower() not in [
+                        "shopee",
+                        "shopee brasil",
+                        "ofertas incríveis. melhores preços do mercado"
+                    ]:
+                        nome = titulo
+
+            except Exception:
+                pass
+
+            # Tenta títulos visíveis se o meta não funcionar
+            if not nome:
+
+                seletores_nome = [
+                    "h1",
+                    '[class*="product-title"]',
+                    '[class*="item-title"]',
+                    '[class*="name"]'
+                ]
+
+                for seletor in seletores_nome:
+
+                    try:
+
+                        elementos = pagina.locator(
+                            seletor
+                        )
+
+                        quantidade = elementos.count()
+
+                        for i in range(
+                            min(quantidade, 10)
+                        ):
+
+                            valor = elementos.nth(i).inner_text(
+                                timeout=3000
+                            ).strip()
+
+                            valor = re.sub(
+                                r"\s+",
+                                " ",
+                                valor
+                            )
+
+                            if (
+                                len(valor) >= 5
+                                and "shopee" not in valor.lower()
+                            ):
+
+                                nome = valor
+                                break
+
+                        if nome:
+                            break
+
+                    except Exception:
+                        continue
+
+            # ==========================================
+            # IMAGEM
+            # ==========================================
+
+            try:
+
+                imagem_meta = pagina.locator(
+                    'meta[property="og:image"]'
+                ).get_attribute("content")
+
+                if imagem_meta:
+                    imagem = imagem_meta
+
+            except Exception:
+                pass
+
+            # ==========================================
+            # PREÇO
+            # ==========================================
+
+            # Primeiro procura preços VISÍVEIS
+            # na página carregada pelo navegador.
+
+            padroes_preco = [
+
+                # R$ 29,90
+                r'R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})',
+
+                # R$ 29.90
+                r'R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*\.[0-9]{2})',
+
+                # R$29,90
+                r'R\$\s*([0-9]+,[0-9]{2})',
+
+                # BRL 29,90
+                r'BRL\s*([0-9]+,[0-9]{2})',
+
+                # números com formato decimal
+                r'\b([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})\b'
+            ]
+
+            for padrao in padroes_preco:
+
+                resultado = re.search(
+                    padrao,
+                    texto,
+                    re.IGNORECASE
+                )
+
+                if resultado:
+
+                    candidato = resultado.group(1)
+
+                    try:
+
+                        valor = float(
+                            candidato
+                            .replace(".", "")
+                            .replace(",", ".")
+                        )
+
+                        if 0.01 <= valor < 1000000:
+
+                            preco = candidato
+
+                            print(
+                                "💰 PREÇO ENCONTRADO NA PÁGINA:",
+                                preco
+                            )
+
+                            break
+
+                    except Exception:
+                        continue
+
+            # ==========================================
+            # SEGUNDA TENTATIVA:
+            # HTML APÓS JAVASCRIPT
+            # ==========================================
+
+            if not preco and html:
+
+                padroes_html = [
+
+                    r'"price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+                    r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+                    r'"salePrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+                    r'"salePrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+                    r'"currentPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+                    r'"currentPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+                    r'"minPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+                    r'"minPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+                    r'"priceMin"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+                    r'"priceMin"\s*:\s*([0-9]+(?:\.[0-9]+)?)'
+                ]
+
+                for padrao in padroes_html:
+
+                    resultado = re.search(
+                        padrao,
+                        html,
+                        re.IGNORECASE
+                    )
+
+                    if resultado:
+
+                        candidato = resultado.group(1)
+
+                        try:
+
+                            valor = float(
+                                candidato.replace(",", ".")
+                            )
+
+                            if 0.01 <= valor < 1000000:
+
+                                preco = candidato
+
+                                print(
+                                    "💰 PREÇO ENCONTRADO NO HTML DINÂMICO:",
+                                    preco
+                                )
+
+                                break
+
+                        except Exception:
+                            continue
+
+            # ==========================================
+            # TERCEIRA TENTATIVA:
+            # JSON-LD APÓS CARREGAMENTO
+            # ==========================================
+
+            if not preco and html:
+
+                jsonld = extrair_jsonld(html)
+
+                (
+                    nome_json,
+                    imagem_json,
+                    preco_json
+                ) = procurar_produto_jsonld(jsonld)
+
+                if not nome and nome_json:
+                    nome = str(nome_json).strip()
+
+                if not imagem and imagem_json:
+
+                    if isinstance(
+                        imagem_json,
+                        list
+                    ):
+
+                        if imagem_json:
+                            imagem = imagem_json[0]
+
+                    else:
+                        imagem = imagem_json
+
+                if preco_json:
+
+                    preco = str(
+                        preco_json
+                    ).strip()
+
+                    print(
+                        "💰 PREÇO ENCONTRADO NO JSON-LD:",
+                        preco
+                    )
+
+            # ==========================================
+            # FECHAR NAVEGADOR
+            # ==========================================
+
+            navegador.close()
+
+    except Exception as erro:
+
+        print(
+            "❌ Erro no leitor Shopee:",
+            repr(erro)
+        )
 
     # ==========================================
     # LIMPAR NOME
@@ -537,31 +594,6 @@ def extrair_dados_shopee(link):
             nome
         ).strip()
 
-
-    # ==========================================
-    # VALIDAR NOME
-    # ==========================================
-
-    if nome:
-
-        nome_normalizado = nome.lower().strip()
-
-        for nome_invalido in nomes_invalidos:
-
-            if (
-                nome_normalizado
-                == nome_invalido.lower()
-            ):
-
-                print(
-                    "⚠️ Nome encontrado é da página inicial."
-                )
-
-                nome = None
-
-                break
-
-
     # ==========================================
     # LIMPAR PREÇO
     # ==========================================
@@ -575,6 +607,7 @@ def extrair_dados_shopee(link):
             valor = float(
                 preco
                 .replace("R$", "")
+                .replace("BRL", "")
                 .replace(" ", "")
                 .replace(".", "")
                 .replace(",", ".")
@@ -585,10 +618,13 @@ def extrair_dados_shopee(link):
                 .replace(".", ",")
             )
 
-        except Exception:
+        except Exception as erro:
 
-            pass
-
+            print(
+                "⚠️ Não consegui formatar preço:",
+                preco,
+                erro
+            )
 
     # ==========================================
     # VALIDAR IMAGEM
@@ -599,28 +635,22 @@ def extrair_dados_shopee(link):
         imagem = str(imagem).strip()
 
         if not imagem.startswith("http"):
-
             imagem = None
-
 
     # ==========================================
     # RESULTADO
     # ==========================================
 
     print("")
-    print("🔎 DADOS ENCONTRADOS:")
-
+    print("======================================")
+    print("🔎 RESULTADO DO LEITOR SHOPEE")
     print("🛒 Nome:", nome)
     print("💰 Preço:", preco)
     print("🖼️ Imagem:", imagem)
-
+    print("======================================")
     print("")
 
     return nome, preco, imagem
-
-
-
-
 # ==========================================
 # PUBLICAR PRODUTO
 # ==========================================
