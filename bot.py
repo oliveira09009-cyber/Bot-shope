@@ -831,22 +831,128 @@ def extrair_dados_shopee(
                         nome
                     )
 
-            # ==========================================
-            # IMAGEM
-            # ==========================================
+    # ==========================================
+# IMAGEM
+# ==========================================
 
-            imagem_og = extrair_meta(
-                html,
-                "og:image"
-            )
+imagem_og = extrair_meta(
+    html,
+    "og:image"
+)
 
-            if imagem_og:
+if imagem_og:
 
-                imagem = imagem_og
+    imagem = imagem_og
 
-                print(
-                    "🖼️ Imagem encontrada."
+    print(
+        "🖼️ Imagem encontrada no og:image."
+    )
+
+# ==========================================
+# TENTAR ENCONTRAR IMAGEM NO DOM
+# ==========================================
+
+if not imagem:
+
+    try:
+
+        imagens = pagina.locator(
+            "img"
+        )
+
+        quantidade_imagens = imagens.count()
+
+        print(
+            "🖼️ Imagens encontradas no DOM:",
+            quantidade_imagens
+        )
+
+        for i in range(
+            min(quantidade_imagens, 30)
+        ):
+
+            try:
+
+                elemento = imagens.nth(i)
+
+                src = elemento.get_attribute(
+                    "src"
                 )
+
+                if not src:
+
+                    src = elemento.get_attribute(
+                        "data-src"
+                    )
+
+                if not src:
+
+                    src = elemento.get_attribute(
+                        "data-lazy-src"
+                    )
+
+                # Tenta também srcset
+                if not src:
+
+                    srcset = elemento.get_attribute(
+                        "srcset"
+                    )
+
+                    if srcset:
+
+                        src = (
+                            srcset.split(",")[0]
+                            .strip()
+                            .split(" ")[0]
+                        )
+
+                if src and src.startswith(
+                    "http"
+                ):
+
+                    # Ignorar imagens pequenas,
+                    # ícones e logos quando possível
+                    largura = elemento.get_attribute(
+                        "width"
+                    )
+
+                    altura = elemento.get_attribute(
+                        "height"
+                    )
+
+                    if largura and altura:
+
+                        try:
+
+                            if (
+                                int(largura) < 100
+                                or int(altura) < 100
+                            ):
+                                continue
+
+                        except Exception:
+
+                            pass
+
+                    imagem = src
+
+                    print(
+                        "🖼️ IMAGEM ENCONTRADA NO DOM:",
+                        imagem
+                    )
+
+                    break
+
+            except Exception:
+
+                continue
+
+    except Exception as erro:
+
+        print(
+            "⚠️ Erro procurando imagem no DOM:",
+            erro
+        )
 
             # ==========================================
             # JSON-LD
