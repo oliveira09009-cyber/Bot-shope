@@ -18,7 +18,7 @@ REDIS_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # 5 produtos por hora
-INTERVALO = 760
+INTERVALO = 720
 
 
 # ==========================================
@@ -233,7 +233,7 @@ def procurar_produto_jsonld(dados):
     return nome, imagem, preco
 
 
- def extrair_dados_shopee(link):
+def extrair_dados_shopee(link):
 
     print("🔎 Analisando Shopee:")
     print(link)
