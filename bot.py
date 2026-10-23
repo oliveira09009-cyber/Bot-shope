@@ -1,4 +1,4 @@
-import requests
+,import requests
 import json
 import os
 import time
@@ -329,40 +329,52 @@ def extrair_dados_shopee(link):
 
 
     # ==========================================
-    # TENTAR ENCONTRAR PREÇO
-    # ==========================================
+# TENTAR ENCONTRAR PREÇO
+# ==========================================
 
-    if not preco:
+if not preco:
 
-        padroes_preco = [
+    padroes_preco = [
 
-            r'"price"\s*:\s*"([^"]+)"',
+        r'"price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
 
-            r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
-            r'"salePrice"\s*:\s*"([^"]+)"',
+        r'"salePrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
 
-            r'"sale_price"\s*:\s*"([^"]+)"',
+        r'"sale_price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
 
-            r'"current_price"\s*:\s*"([^"]+)"',
+        r'"current_price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
 
-            r'"currentPrice"\s*:\s*"([^"]+)"'
+        r'"currentPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
 
-        ]
+        r'"minPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
 
-        for padrao in padroes_preco:
+        r'"maxPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
 
-            resultado = re.search(
-                padrao,
-                html,
-                re.IGNORECASE
+        r'"priceMin"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+
+        r'"priceMax"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"'
+    ]
+
+    for padrao in padroes_preco:
+
+        resultado = re.search(
+            padrao,
+            html,
+            re.IGNORECASE
+        )
+
+        if resultado:
+
+            preco = resultado.group(1)
+
+            print(
+                "💰 Preço encontrado no HTML:",
+                preco
             )
 
-            if resultado:
-
-                preco = resultado.group(1)
-
-                break
+            break
 
 
     # ==========================================
