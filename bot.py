@@ -267,7 +267,6 @@ def extrair_dados_shopee(link):
         print("🔗 URL final:", resposta.url)
 
         if resposta.status_code != 200:
-
             return None, None, None
 
         html = resposta.text
@@ -282,18 +281,66 @@ def extrair_dados_shopee(link):
 
 
     # ==========================================
+    # VALORES INICIAIS
+    # ==========================================
+
+    nome = None
+    preco = None
+    imagem = None
+
+
+    # ==========================================
     # OPEN GRAPH
     # ==========================================
 
-    nome = extrair_meta(
-        html,
-        "og:title"
-    )
+    nome_og = extrair_meta(html, "og:title")
+    imagem_og = extrair_meta(html, "og:image")
 
-    imagem = extrair_meta(
-        html,
-        "og:image"
-    )
+
+    # ==========================================
+    # NÃO ACEITAR PÁGINA INICIAL
+    # ==========================================
+
+    nomes_invalidos = [
+        "Shopee Brasil | Ofertas incríveis. Melhores preços do mercado",
+        "Shopee Brasil",
+        "Ofertas incríveis. Melhores preços do mercado",
+        "Shopee"
+    ]
+
+    if nome_og:
+
+        nome_og = unescape(str(nome_og))
+
+        nome_og = re.sub(
+            r"\s+",
+            " ",
+            nome_og
+        ).strip()
+
+        nome_normalizado = nome_og.lower()
+
+        if not any(
+            nome_normalizado == invalido.lower()
+            for invalido in nomes_invalidos
+        ):
+
+            nome = nome_og
+
+        else:
+
+            print(
+                "⚠️ og:title pertence à página inicial."
+            )
+
+
+    # ==========================================
+    # IMAGEM
+    # ==========================================
+
+    if imagem_og:
+
+        imagem = imagem_og
 
 
     # ==========================================
@@ -309,7 +356,22 @@ def extrair_dados_shopee(link):
 
     if nome_json:
 
-        nome = nome_json
+        nome_json = unescape(str(nome_json))
+
+        nome_json = re.sub(
+            r"\s+",
+            " ",
+            nome_json
+        ).strip()
+
+        nome_normalizado = nome_json.lower()
+
+        if not any(
+            nome_normalizado == invalido.lower()
+            for invalido in nomes_invalidos
+        ):
+
+            nome = nome_json
 
 
     if imagem_json:
@@ -325,38 +387,123 @@ def extrair_dados_shopee(link):
             imagem = imagem_json
 
 
-    preco = preco_json
+    if preco_json:
+
+        preco = preco_json
+
+        print(
+            "💰 Preço encontrado no JSON-LD:",
+            preco
+        )
+
 
     # ==========================================
-    # TENTAR ENCONTRAR PREÇO
+    # EXTRAÇÃO DE PREÇO
     # ==========================================
 
     if not preco:
 
         padroes_preco = [
 
+            # price
             r'"price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-
             r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
+            # salePrice
             r'"salePrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"salePrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
+            # sale_price
             r'"sale_price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"sale_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
-            r'"current_price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
-
+            # currentPrice
             r'"currentPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"currentPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
+            # current_price
+            r'"current_price"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"current_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+            # minPrice
             r'"minPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"minPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
+            # maxPrice
             r'"maxPrice"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"maxPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
+            # priceMin
             r'"priceMin"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"priceMin"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
-            r'"priceMax"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"'
+            # priceMax
+            r'"priceMax"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"priceMax"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+            # salePriceMin
+            r'"salePriceMin"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"salePriceMin"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+            # salePriceMax
+            r'"salePriceMax"\s*:\s*"([0-9]+(?:[.,][0-9]+)?)"',
+            r'"salePriceMax"\s*:\s*([0-9]+(?:\.[0-9]+)?)'
         ]
 
+
         for padrao in padroes_preco:
+
+            resultado = re.search(
+                padrao,
+                html,
+                re.IGNORECASE
+            )
+
+            if resultado:
+
+                valor_encontrado = resultado.group(1)
+
+                try:
+
+                    valor = float(
+                        valor_encontrado.replace(",", ".")
+                    )
+
+                    # Evita números absurdos
+                    if 0 < valor < 1000000:
+
+                        preco = valor_encontrado
+
+                        print(
+                            "💰 Preço encontrado no HTML:",
+                            preco
+                        )
+
+                        break
+
+                except Exception:
+
+                    continue
+
+
+    # ==========================================
+    # TENTAR ENCONTRAR PREÇO FORMATADO
+    # ==========================================
+
+    if not preco:
+
+        padroes_formatados = [
+
+            r'R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})',
+
+            r'R\$\s*([0-9]+,[0-9]{2})',
+
+            r'BRL\s*([0-9]+(?:[.,][0-9]{2})?)'
+
+        ]
+
+
+        for padrao in padroes_formatados:
 
             resultado = re.search(
                 padrao,
@@ -369,7 +516,7 @@ def extrair_dados_shopee(link):
                 preco = resultado.group(1)
 
                 print(
-                    "💰 Preço encontrado no HTML:",
+                    "💰 Preço formatado encontrado:",
                     preco
                 )
 
@@ -392,20 +539,8 @@ def extrair_dados_shopee(link):
 
 
     # ==========================================
-    # NÃO ACEITAR NOME DA PÁGINA INICIAL
+    # VALIDAR NOME
     # ==========================================
-
-    nomes_invalidos = [
-
-        "Shopee Brasil | Ofertas incríveis. Melhores preços do mercado",
-
-        "Shopee Brasil",
-
-        "Ofertas incríveis. Melhores preços do mercado",
-
-        "Shopee"
-
-    ]
 
     if nome:
 
@@ -413,7 +548,10 @@ def extrair_dados_shopee(link):
 
         for nome_invalido in nomes_invalidos:
 
-            if nome_normalizado == nome_invalido.lower():
+            if (
+                nome_normalizado
+                == nome_invalido.lower()
+            ):
 
                 print(
                     "⚠️ Nome encontrado é da página inicial."
@@ -435,9 +573,11 @@ def extrair_dados_shopee(link):
         try:
 
             valor = float(
-                preco.replace("R$", "")
-                     .replace(" ", "")
-                     .replace(",", ".")
+                preco
+                .replace("R$", "")
+                .replace(" ", "")
+                .replace(".", "")
+                .replace(",", ".")
             )
 
             preco = (
@@ -476,7 +616,9 @@ def extrair_dados_shopee(link):
 
     print("")
 
-    return nome, preco, imagem  
+    return nome, preco, imagem
+
+
 
 
 # ==========================================
