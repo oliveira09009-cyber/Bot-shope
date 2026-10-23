@@ -8,7 +8,6 @@ import html as html_lib
 from urllib.parse import urljoin
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-
 # ============================================================
 # CONFIGURAÇÕES
 # ============================================================
@@ -23,7 +22,6 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # 5 produtos por hora
 INTERVALO = 720
-
 
 # ============================================================
 # HEADERS
@@ -46,7 +44,6 @@ HEADERS = {
     "Referer": "https://shopee.com.br/",
 }
 
-
 # ============================================================
 # REDIS
 # ============================================================
@@ -61,11 +58,8 @@ def redis_cmd(*args):
         json=list(args),
         timeout=15
     )
-
     resposta.raise_for_status()
-
     dados = resposta.json()
-
     return dados.get("result")
 
 
@@ -111,11 +105,9 @@ def adicionar_na_fila(nome, link, imagem=None, preco=None):
     }
 
     fila.append(produto)
-
     salvar_fila(fila)
 
     return True, len(fila)
-
 
 # ============================================================
 # TELEGRAM
@@ -131,13 +123,11 @@ def enviar_mensagem(chat_id, texto):
             },
             timeout=30
         )
-
         return resposta.json()
 
     except Exception as erro:
         print("❌ Erro Telegram:", repr(erro))
         return {"ok": False}
-
 
 # ============================================================
 # LIMPEZA
@@ -182,29 +172,22 @@ def normalizar_url(url):
 
     return url
 
-
 # ============================================================
 # META TAGS
 # ============================================================
 
 def extrair_meta(html, nome):
-
     if not html:
         return None
 
     padroes = [
-
         rf'<meta[^>]+property=["\']{re.escape(nome)}["\'][^>]+content=["\']([^"\']+)["\']',
-
         rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{re.escape(nome)}["\']',
-
         rf'<meta[^>]+name=["\']{re.escape(nome)}["\'][^>]+content=["\']([^"\']+)["\']',
-
         rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']{re.escape(nome)}["\']'
     ]
 
     for padrao in padroes:
-
         encontrado = re.search(
             padrao,
             html,
@@ -212,19 +195,15 @@ def extrair_meta(html, nome):
         )
 
         if encontrado:
-            return limpar_texto(
-                encontrado.group(1)
-            )
+            return limpar_texto(encontrado.group(1))
 
     return None
-
 
 # ============================================================
 # JSON-LD
 # ============================================================
 
 def extrair_jsonld(html):
-
     resultados = []
 
     blocos = re.findall(
@@ -236,18 +215,13 @@ def extrair_jsonld(html):
     )
 
     for bloco in blocos:
-
         try:
-
             dados = json.loads(
-                html_lib.unescape(
-                    bloco.strip()
-                )
+                html_lib.unescape(bloco.strip())
             )
 
             if isinstance(dados, list):
                 resultados.extend(dados)
-
             elif isinstance(dados, dict):
                 resultados.append(dados)
 
@@ -258,27 +232,22 @@ def extrair_jsonld(html):
 
 
 def procurar_jsonld_produto(dados):
-
     nome = None
     imagem = None
     preco = None
 
     for item in dados:
-
         if not isinstance(item, dict):
             continue
 
         tipo = item.get("@type")
 
         if isinstance(tipo, list):
-
             eh_produto = any(
                 str(x).lower() == "product"
                 for x in tipo
             )
-
         else:
-
             eh_produto = (
                 str(tipo).lower() == "product"
             )
@@ -295,7 +264,6 @@ def procurar_jsonld_produto(dados):
             ofertas = ofertas[0]
 
         if isinstance(ofertas, dict):
-
             preco = (
                 ofertas.get("price")
                 or ofertas.get("lowPrice")
@@ -314,18 +282,15 @@ def procurar_jsonld_produto(dados):
         preco
     )
 
-
 # ============================================================
 # CONVERSÃO DE PREÇO
 # ============================================================
 
 def converter_preco(valor):
-
     if valor is None:
         return None
 
     try:
-
         texto = str(valor).strip()
 
         if not texto:
@@ -336,14 +301,10 @@ def converter_preco(valor):
         texto = texto.replace(" ", "")
 
         if "," in texto:
-
             texto = texto.replace(".", "")
             texto = texto.replace(",", ".")
-
             numero = float(texto)
-
         else:
-
             numero = float(texto)
 
         if numero <= 0:
@@ -354,14 +315,9 @@ def converter_preco(valor):
 
         if numero >= 100000:
             numero = numero / 100000
-
         elif numero >= 10000:
             numero = numero / 100
-
-        elif (
-            numero >= 1000
-            and numero.is_integer()
-        ):
+        elif numero >= 1000 and numero.is_integer():
             numero = numero / 100
 
         if numero <= 0:
@@ -370,21 +326,13 @@ def converter_preco(valor):
         if numero > 500000:
             return None
 
-        return round(
-            numero,
-            2
-        )
+        return round(numero, 2)
 
     except Exception:
         return None
 
 
-# ============================================================
-# VALIDAR PREÇO
-# ============================================================
-
 def preco_valido(valor):
-
     numero = converter_preco(valor)
 
     if numero is None:
@@ -398,35 +346,27 @@ def preco_valido(valor):
 
     return True
 
-
 # ============================================================
 # PREÇOS DO TEXTO
 # ============================================================
 
 def precos_do_texto(texto):
-
     if not texto:
         return []
 
     candidatos = []
 
     padroes = [
-
         r'R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})',
-
         r'R\$\s*([0-9]+(?:\.[0-9]{2}))',
-
         r'R\$\s*([0-9]+)',
-
         r'BRL\s*([0-9]+(?:[.,][0-9]{1,2})?)',
-
         r'(?:preço|price|valor)\s*[:=]?\s*'
         r'(?:R\$|BRL)?\s*'
         r'([0-9]{1,6}(?:[.,][0-9]{1,2})?)'
     ]
 
     for padrao in padroes:
-
         encontrados = re.findall(
             padrao,
             texto,
@@ -434,7 +374,6 @@ def precos_do_texto(texto):
         )
 
         for valor in encontrados:
-
             numero = converter_preco(valor)
 
             if preco_valido(numero):
@@ -442,71 +381,52 @@ def precos_do_texto(texto):
 
     return candidatos
 
-
 # ============================================================
 # PREÇOS DO HTML
 # ============================================================
 
 def precos_do_html(html):
-
     if not html:
         return []
 
     candidatos = []
 
     padroes = [
-
         r'"price"\s*:\s*"([^"]+)"',
         r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"price_min"\s*:\s*"([^"]+)"',
         r'"price_min"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"price_max"\s*:\s*"([^"]+)"',
         r'"price_max"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"priceMin"\s*:\s*"([^"]+)"',
         r'"priceMin"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"priceMax"\s*:\s*"([^"]+)"',
         r'"priceMax"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"salePrice"\s*:\s*"([^"]+)"',
         r'"salePrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"currentPrice"\s*:\s*"([^"]+)"',
         r'"currentPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"current_price"\s*:\s*"([^"]+)"',
         r'"current_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"discountPrice"\s*:\s*"([^"]+)"',
         r'"discountPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"price_before_discount"\s*:\s*"([^"]+)"',
         r'"price_before_discount"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"priceBeforeDiscount"\s*:\s*"([^"]+)"',
         r'"priceBeforeDiscount"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"display_price"\s*:\s*"([^"]+)"',
         r'"display_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"final_price"\s*:\s*"([^"]+)"',
         r'"final_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"sale_price"\s*:\s*"([^"]+)"',
         r'"sale_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"priceValue"\s*:\s*"([^"]+)"',
         r'"priceValue"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"amount"\s*:\s*"([^"]+)"',
         r'"amount"\s*:\s*([0-9]+(?:\.[0-9]+)?)'
     ]
 
     for padrao in padroes:
-
         encontrados = re.findall(
             padrao,
             html,
@@ -514,7 +434,6 @@ def precos_do_html(html):
         )
 
         for valor in encontrados:
-
             numero = converter_preco(valor)
 
             if preco_valido(numero):
@@ -522,18 +441,15 @@ def precos_do_html(html):
 
     return candidatos
 
-
 # ============================================================
 # PREÇO POR CONTEXTO
 # ============================================================
 
 def preco_por_contexto(html):
-
     if not html:
         return None
 
     padroes_contexto = [
-
         r'.{0,500}"price".{0,500}',
         r'.{0,500}"price_min".{0,500}',
         r'.{0,500}"priceMin".{0,500}',
@@ -546,7 +462,6 @@ def preco_por_contexto(html):
     candidatos = []
 
     for padrao in padroes_contexto:
-
         trechos = re.findall(
             padrao,
             html,
@@ -554,71 +469,38 @@ def preco_por_contexto(html):
         )
 
         for trecho in trechos[:50]:
-
-            encontrados = precos_do_html(
-                trecho
-            )
+            encontrados = precos_do_html(trecho)
 
             if not encontrados:
-                encontrados = precos_do_texto(
-                    trecho
-                )
+                encontrados = precos_do_texto(trecho)
 
-            candidatos.extend(
-                encontrados
-            )
+            candidatos.extend(encontrados)
 
     if candidatos:
-
-        candidatos = sorted(
-            set(candidatos)
-        )
-
+        candidatos = sorted(set(candidatos))
         return candidatos[0]
 
     return None
-
 
 # ============================================================
 # EXTRAIR IMAGEM SHOPEE
 # ============================================================
 
 def encontrar_imagem_html(html):
-
     if not html:
         return None
 
     candidatos = []
 
     def adicionar(url):
-
         if not url:
             return
 
-        url = html_lib.unescape(
-            str(url)
-        )
-
-        url = url.replace(
-            "\\/",
-            "/"
-        )
-
-        url = url.replace(
-            "\\u002F",
-            "/"
-        )
-
-        url = url.replace(
-            "\\u003A",
-            ":"
-        )
-
-        url = url.replace(
-            "\\u0026",
-            "&"
-        )
-
+        url = html_lib.unescape(str(url))
+        url = url.replace("\\/", "/")
+        url = url.replace("\\u002F", "/")
+        url = url.replace("\\u003A", ":")
+        url = url.replace("\\u0026", "&")
         url = url.strip()
         url = url.strip("\"' ")
 
@@ -647,187 +529,98 @@ def encontrar_imagem_html(html):
             "default_image"
         )
 
-        if any(
-            palavra in baixo
-            for palavra in ignorar
-        ):
+        if any(palavra in baixo for palavra in ignorar):
             return
 
         candidatos.append(url)
 
-    # ========================================================
-    # OG IMAGE
-    # ========================================================
-
-    adicionar(
-        extrair_meta(
-            html,
-            "og:image"
-        )
-    )
-
-    # ========================================================
-    # OG IMAGE SECURE
-    # ========================================================
-
-    adicionar(
-        extrair_meta(
-            html,
-            "og:image:secure_url"
-        )
-    )
-
-    # ========================================================
-    # TWITTER
-    # ========================================================
-
-    adicionar(
-        extrair_meta(
-            html,
-            "twitter:image"
-        )
-    )
-
-    # ========================================================
-    # LINK IMAGE_SRC
-    # ========================================================
+    adicionar(extrair_meta(html, "og:image"))
+    adicionar(extrair_meta(html, "og:image:secure_url"))
+    adicionar(extrair_meta(html, "twitter:image"))
 
     padroes_meta = [
-
         r'<link[^>]+rel=["\'][^"\']*image_src[^"\']*["\'][^>]+href=["\']([^"\']+)["\']',
-
         r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\'][^"\']*image_src[^"\']*["\']',
-
         r'<link[^>]+rel=["\'][^"\']*preload[^"\']*["\'][^>]+href=["\']([^"\']+)["\']',
-
         r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\'][^"\']*preload[^"\']*["\']'
     ]
 
     for padrao in padroes_meta:
-
         encontrados = re.findall(
             padrao,
             html,
             re.IGNORECASE | re.DOTALL
         )
-
         for url in encontrados:
             adicionar(url)
 
-    # ========================================================
-    # SUSERCONTENT
-    # ========================================================
-
     padroes_susercontent = [
-
         r'https?://[^"\'<>\s]+susercontent\.com/file/[^"\'<>\s]+',
-
         r'https?:\\?/\\?/[^"\'<>\s]+susercontent\.com/file/[^"\'<>\s]+',
-
         r'https?://[^"\'<>\s]*img\.susercontent\.com/[^"\'<>\s]+',
-
         r'https?:\\?/\\?/[^"\'<>\s]*img\.susercontent\.com/[^"\'<>\s]+'
     ]
 
     for padrao in padroes_susercontent:
-
         encontrados = re.findall(
             padrao,
             html,
             re.IGNORECASE
         )
-
         for url in encontrados:
             adicionar(url)
 
-    # ========================================================
-    # CAMPOS JSON DE IMAGEM
-    # ========================================================
-
     padroes_json = [
-
         r'"image"\s*:\s*"([^"]+)"',
-
         r'"imageUrl"\s*:\s*"([^"]+)"',
-
         r'"image_url"\s*:\s*"([^"]+)"',
-
         r'"coverImage"\s*:\s*"([^"]+)"',
-
         r'"cover_image"\s*:\s*"([^"]+)"',
-
         r'"mainImage"\s*:\s*"([^"]+)"',
-
         r'"main_image"\s*:\s*"([^"]+)"',
-
         r'"originalImage"\s*:\s*"([^"]+)"',
-
         r'"original_image"\s*:\s*"([^"]+)"'
     ]
 
     for padrao in padroes_json:
-
         encontrados = re.findall(
             padrao,
             html,
             re.IGNORECASE
         )
-
         for url in encontrados:
             adicionar(url)
 
-    # ========================================================
-    # LISTAS DE IMAGEM
-    # ========================================================
-
     padroes_lista = [
-
         r'"imageUrlList"\s*:\s*\[(.*?)\]',
-
         r'"image_url_list"\s*:\s*\[(.*?)\]',
-
         r'"images"\s*:\s*\[(.*?)\]'
     ]
 
     for padrao in padroes_lista:
-
         encontrados = re.findall(
             padrao,
             html,
             re.IGNORECASE | re.DOTALL
         )
-
         for bloco in encontrados:
-
             urls = re.findall(
                 r'https?[^"\']+',
                 bloco
             )
-
             for url in urls:
                 adicionar(url)
 
-    # ========================================================
-    # IMG HTML
-    # ========================================================
-
     padroes_img = [
-
         r'<img[^>]+src=["\']([^"\']+)["\']',
-
         r'<img[^>]+data-src=["\']([^"\']+)["\']',
-
         r'<img[^>]+data-original=["\']([^"\']+)["\']',
-
         r'<img[^>]+data-lazy-src=["\']([^"\']+)["\']',
-
         r'<img[^>]+data-url=["\']([^"\']+)["\']',
-
         r'<source[^>]+srcset=["\']([^"\']+)["\']'
     ]
 
     for padrao in padroes_img:
-
         encontrados = re.findall(
             padrao,
             html,
@@ -835,11 +628,9 @@ def encontrar_imagem_html(html):
         )
 
         for encontrado in encontrados:
-
             partes = encontrado.split(",")
 
             for parte in partes:
-
                 parte = parte.strip()
 
                 parte = re.sub(
@@ -850,10 +641,6 @@ def encontrar_imagem_html(html):
 
                 adicionar(parte)
 
-    # ========================================================
-    # ESCOLHER MELHOR IMAGEM
-    # ========================================================
-
     if not candidatos:
         return None
 
@@ -861,58 +648,42 @@ def encontrar_imagem_html(html):
     vistos = set()
 
     for url in candidatos:
-
         chave = url.lower()
 
         if chave not in vistos:
-
             vistos.add(chave)
             unicos.append(url)
 
-    # Primeiro: CDN principal da Shopee
     for url in unicos:
-
         if "susercontent.com/file/" in url.lower():
             return url
 
-    # Segundo: qualquer susercontent
     for url in unicos:
-
         if "susercontent.com" in url.lower():
             return url
 
     return unicos[0]
-
 
 # ============================================================
 # EXTRAIR NOME
 # ============================================================
 
 def encontrar_nome_html(html):
-
     if not html:
         return None
 
-    nome = extrair_meta(
-        html,
-        "og:title"
-    )
+    nome = extrair_meta(html, "og:title")
 
     if nome:
-
-        nome = limpar_texto(
-            nome
-        )
+        nome = limpar_texto(nome)
 
         if (
             len(nome) >= 5
-            and nome.lower()
-            not in (
+            and nome.lower() not in (
                 "shopee",
                 "shopee brasil"
             )
         ):
-
             return nome
 
     titulo = re.search(
@@ -922,57 +693,39 @@ def encontrar_nome_html(html):
     )
 
     if titulo:
-
-        nome = limpar_texto(
-            titulo.group(1)
-        )
+        nome = limpar_texto(titulo.group(1))
 
         if (
             nome
             and len(nome) >= 5
             and "shopee" not in nome.lower()
         ):
-
             return nome
 
     return None
-
 
 # ============================================================
 # PLAYWRIGHT
 # ============================================================
 
 def tentar_playwright(url):
-
     nome = None
     preco = None
     imagem = None
 
     try:
-
         from playwright.sync_api import sync_playwright
-
     except Exception as erro:
-
-        print(
-            "⚠️ Playwright não disponível:",
-            repr(erro)
-        )
-
+        print("⚠️ Playwright não disponível:", repr(erro))
         return nome, preco, imagem
 
     try:
-
-        print(
-            "🌐 Abrindo Shopee com Playwright..."
-        )
+        print("🌐 Abrindo Shopee com Playwright...")
 
         with sync_playwright() as p:
 
             navegador = p.chromium.launch(
-
                 headless=True,
-
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
@@ -982,54 +735,31 @@ def tentar_playwright(url):
             )
 
             pagina = navegador.new_page(
-
                 viewport={
                     "width": 1366,
                     "height": 900
                 },
-
-                user_agent=HEADERS[
-                    "User-Agent"
-                ],
-
+                user_agent=HEADERS["User-Agent"],
                 locale="pt-BR",
-
                 timezone_id="America/Sao_Paulo"
             )
 
-            pagina.set_default_timeout(
-                15000
-            )
+            pagina.set_default_timeout(15000)
 
             try:
-
                 pagina.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=40000
                 )
-
             except Exception as erro:
+                print("⚠️ Navegação:", repr(erro))
 
-                print(
-                    "⚠️ Navegação:",
-                    repr(erro)
-                )
-
-            pagina.wait_for_timeout(
-                7000
-            )
-
-            # =================================================
-            # HTML RENDERIZADO
-            # =================================================
+            pagina.wait_for_timeout(7000)
 
             try:
-
                 html = pagina.content()
-
             except Exception:
-
                 html = ""
 
             print(
@@ -1039,37 +769,21 @@ def tentar_playwright(url):
             )
 
             if html:
+                nome = encontrar_nome_html(html)
+                imagem = encontrar_imagem_html(html)
 
-                nome = encontrar_nome_html(
-                    html
-                )
-
-                imagem = encontrar_imagem_html(
-                    html
-                )
-
-                precos = precos_do_html(
-                    html
-                )
+                precos = precos_do_html(html)
 
                 if precos:
-
-                    precos = sorted(
-                        set(precos)
-                    )
-
+                    precos = sorted(set(precos))
                     preco = precos[0]
-
                     print(
                         "💰 PREÇO PLAYWRIGHT HTML:",
                         preco
                     )
 
                 try:
-
-                    dados_jsonld = (
-                        extrair_jsonld(html)
-                    )
+                    dados_jsonld = extrair_jsonld(html)
 
                     (
                         nome_json,
@@ -1086,57 +800,40 @@ def tentar_playwright(url):
                         imagem = imagem_json
 
                     if not preco and preco_json:
-
                         convertido = converter_preco(
                             preco_json
                         )
 
                         if preco_valido(convertido):
-
                             preco = convertido
-
                             print(
                                 "💰 PREÇO PLAYWRIGHT JSON-LD:",
                                 preco
                             )
 
                 except Exception as erro:
-
                     print(
                         "⚠️ JSON-LD Playwright:",
                         repr(erro)
                     )
 
-            # =================================================
-            # TEXTO VISÍVEL
-            # =================================================
-
             try:
-
                 texto = pagina.locator(
                     "body"
-                ).inner_text(
-                    timeout=15000
-                )
-
+                ).inner_text(timeout=15000)
             except Exception:
-
                 texto = ""
 
             if texto:
-
                 print(
                     "📝 TEXTO VISÍVEL:",
                     len(texto),
                     "caracteres"
                 )
 
-                precos_texto = precos_do_texto(
-                    texto
-                )
+                precos_texto = precos_do_texto(texto)
 
                 if precos_texto:
-
                     precos_texto = sorted(
                         set(precos_texto)
                     )
@@ -1150,28 +847,17 @@ def tentar_playwright(url):
                         preco = precos_texto[0]
 
                 if preco is None:
-
-                    preco_contexto = preco_por_contexto(
-                        texto
-                    )
+                    preco_contexto = preco_por_contexto(texto)
 
                     if preco_contexto:
-
                         preco = preco_contexto
-
                         print(
                             "💰 PREÇO CONTEXTO VISÍVEL:",
                             preco
                         )
 
-            # =================================================
-            # ELEMENTOS COM PREÇO
-            # =================================================
-
             if preco is None:
-
                 seletores_preco = [
-
                     '[class*="price"]',
                     '[class*="Price"]',
                     '[class*="price-"]',
@@ -1182,40 +868,21 @@ def tentar_playwright(url):
                 ]
 
                 for seletor in seletores_preco:
-
                     try:
-
-                        elementos = pagina.locator(
-                            seletor
-                        )
-
+                        elementos = pagina.locator(seletor)
                         quantidade = elementos.count()
 
-                        for i in range(
-                            min(
-                                quantidade,
-                                100
-                            )
-                        ):
-
+                        for i in range(min(quantidade, 100)):
                             try:
-
                                 valor = (
                                     elementos
                                     .nth(i)
-                                    .inner_text(
-                                        timeout=1500
-                                    )
+                                    .inner_text(timeout=1500)
                                 )
 
-                                encontrados = (
-                                    precos_do_texto(
-                                        valor
-                                    )
-                                )
+                                encontrados = precos_do_texto(valor)
 
                                 if encontrados:
-
                                     preco = sorted(
                                         set(encontrados)
                                     )[0]
@@ -1225,7 +892,6 @@ def tentar_playwright(url):
                                         seletor,
                                         preco
                                     )
-
                                     break
 
                             except Exception:
@@ -1237,47 +903,25 @@ def tentar_playwright(url):
                     except Exception:
                         continue
 
-            # =================================================
-            # H1
-            # =================================================
-
             if not nome:
-
                 try:
-
-                    h1 = pagina.locator(
-                        "h1"
-                    )
-
+                    h1 = pagina.locator("h1")
                     quantidade = h1.count()
 
-                    for i in range(
-                        min(
-                            quantidade,
-                            10
-                        )
-                    ):
-
+                    for i in range(min(quantidade, 10)):
                         try:
-
                             valor = (
                                 h1.nth(i)
-                                .inner_text(
-                                    timeout=2000
-                                )
+                                .inner_text(timeout=2000)
                             )
 
-                            valor = limpar_texto(
-                                valor
-                            )
+                            valor = limpar_texto(valor)
 
                             if (
                                 valor
                                 and len(valor) >= 5
-                                and "shopee"
-                                not in valor.lower()
+                                and "shopee" not in valor.lower()
                             ):
-
                                 nome = valor
                                 break
 
@@ -1287,18 +931,9 @@ def tentar_playwright(url):
                 except Exception:
                     pass
 
-            # =================================================
-            # IMAGENS DO DOM
-            # =================================================
-
             if not imagem:
-
                 try:
-
-                    imagens = pagina.locator(
-                        "img"
-                    )
-
+                    imagens = pagina.locator("img")
                     quantidade = imagens.count()
 
                     print(
@@ -1308,15 +943,8 @@ def tentar_playwright(url):
 
                     candidatos_dom = []
 
-                    for i in range(
-                        min(
-                            quantidade,
-                            150
-                        )
-                    ):
-
+                    for i in range(min(quantidade, 150)):
                         try:
-
                             elemento = imagens.nth(i)
 
                             atributos = (
@@ -1329,19 +957,14 @@ def tentar_playwright(url):
                             )
 
                             for atributo in atributos:
-
-                                valor = elemento.get_attribute(
-                                    atributo
-                                )
+                                valor = elemento.get_attribute(atributo)
 
                                 if not valor:
                                     continue
 
-                                # srcset pode possuir várias URLs
                                 partes = valor.split(",")
 
                                 for parte in partes:
-
                                     src = parte.strip()
 
                                     src = re.sub(
@@ -1350,9 +973,7 @@ def tentar_playwright(url):
                                         src
                                     )
 
-                                    src = normalizar_url(
-                                        src
-                                    )
+                                    src = normalizar_url(src)
 
                                     if not src:
                                         continue
@@ -1373,83 +994,47 @@ def tentar_playwright(url):
                                     ):
                                         continue
 
-                                    # Preferência absoluta
-                                    # pela imagem da Shopee
                                     if (
-                                        "susercontent.com/file/"
-                                        in baixo
+                                        "susercontent.com/file/" in baixo
                                         or
-                                        "img.susercontent.com"
-                                        in baixo
+                                        "img.susercontent.com" in baixo
                                     ):
+                                        candidatos_dom.append(src)
 
-                                        candidatos_dom.append(
-                                            src
-                                        )
-
-                                    elif (
-                                        "susercontent.com"
-                                        in baixo
-                                    ):
-
-                                        candidatos_dom.append(
-                                            src
-                                        )
+                                    elif "susercontent.com" in baixo:
+                                        candidatos_dom.append(src)
 
                         except Exception:
                             continue
 
-                    # Remove duplicadas
                     vistos = set()
 
                     for src in candidatos_dom:
-
                         if src.lower() in vistos:
                             continue
 
-                        vistos.add(
-                            src.lower()
-                        )
-
+                        vistos.add(src.lower())
                         imagem = src
 
                         print(
                             "🖼️ IMAGEM DOM ENCONTRADA:",
                             imagem
                         )
-
                         break
 
                 except Exception as erro:
-
                     print(
                         "⚠️ Erro imagens DOM:",
                         repr(erro)
                     )
 
-            # =================================================
-            # ÚLTIMA TENTATIVA: IMAGENS COM SRCSET
-            # =================================================
-
             if not imagem:
-
                 try:
-
-                    fontes = pagina.locator(
-                        "source"
-                    )
-
+                    fontes = pagina.locator("source")
                     quantidade = fontes.count()
 
-                    for i in range(
-                        min(
-                            quantidade,
-                            100
-                        )
-                    ):
-
+                    for i in range(min(quantidade, 100)):
                         try:
-
                             srcset = fontes.nth(i).get_attribute(
                                 "srcset"
                             )
@@ -1458,7 +1043,6 @@ def tentar_playwright(url):
                                 continue
 
                             for parte in srcset.split(","):
-
                                 src = parte.strip()
 
                                 src = re.sub(
@@ -1467,27 +1051,20 @@ def tentar_playwright(url):
                                     src
                                 )
 
-                                src = normalizar_url(
-                                    src
-                                )
+                                src = normalizar_url(src)
 
                                 if not src:
                                     continue
 
                                 baixo = src.lower()
 
-                                if (
-                                    "susercontent.com"
-                                    in baixo
-                                ):
-
+                                if "susercontent.com" in baixo:
                                     imagem = src
 
                                     print(
                                         "🖼️ IMAGEM SRCSET:",
                                         imagem
                                     )
-
                                     break
 
                             if imagem:
@@ -1502,25 +1079,18 @@ def tentar_playwright(url):
             navegador.close()
 
     except Exception as erro:
-
         print(
             "⚠️ PLAYWRIGHT INDISPONÍVEL:",
             repr(erro)
         )
 
-    return (
-        nome,
-        preco,
-        imagem
-    )
-
+    return nome, preco, imagem
 
 # ============================================================
 # LEITOR PRINCIPAL SHOPEE
 # ============================================================
 
 def extrair_dados_shopee(link):
-
     print("")
     print("======================================")
     print("🔎 LEITOR SHOPEE V6")
@@ -1532,15 +1102,10 @@ def extrair_dados_shopee(link):
     preco = None
     imagem = None
 
-    # ========================================================
-    # 1. REQUESTS
-    # ========================================================
-
     url_final = link
     html_http = ""
 
     try:
-
         sessao = requests.Session()
 
         resposta = sessao.get(
@@ -1553,13 +1118,8 @@ def extrair_dados_shopee(link):
         url_final = resposta.url
         html_http = resposta.text
 
-        print(
-            "🔗 URL FINAL:"
-        )
-
-        print(
-            url_final
-        )
+        print("🔗 URL FINAL:")
+        print(url_final)
 
         print(
             "📄 HTML HTTP:",
@@ -1568,49 +1128,23 @@ def extrair_dados_shopee(link):
         )
 
     except Exception as erro:
-
-        print(
-            "⚠️ Erro HTTP:",
-            repr(erro)
-        )
-
-    # ========================================================
-    # 2. ANALISAR HTML
-    # ========================================================
+        print("⚠️ Erro HTTP:", repr(erro))
 
     if html_http:
+        print("🔍 Analisando HTML HTTP...")
 
-        print(
-            "🔍 Analisando HTML HTTP..."
-        )
-
-        nome = encontrar_nome_html(
-            html_http
-        )
+        nome = encontrar_nome_html(html_http)
 
         if nome:
+            print("🛒 NOME HTTP:", nome)
 
-            print(
-                "🛒 NOME HTTP:",
-                nome
-            )
-
-        imagem = encontrar_imagem_html(
-            html_http
-        )
+        imagem = encontrar_imagem_html(html_http)
 
         if imagem:
-
-            print(
-                "🖼️ IMAGEM HTTP:",
-                imagem
-            )
+            print("🖼️ IMAGEM HTTP:", imagem)
 
         try:
-
-            dados_jsonld = extrair_jsonld(
-                html_http
-            )
+            dados_jsonld = extrair_jsonld(html_http)
 
             (
                 nome_json,
@@ -1621,171 +1155,76 @@ def extrair_dados_shopee(link):
             )
 
             if not nome and nome_json:
-
                 nome = nome_json
-
-                print(
-                    "🛒 NOME JSON-LD:",
-                    nome
-                )
+                print("🛒 NOME JSON-LD:", nome)
 
             if not imagem and imagem_json:
-
                 imagem = imagem_json
-
-                print(
-                    "🖼️ IMAGEM JSON-LD:",
-                    imagem
-                )
+                print("🖼️ IMAGEM JSON-LD:", imagem)
 
             if not preco and preco_json:
-
-                convertido = converter_preco(
-                    preco_json
-                )
+                convertido = converter_preco(preco_json)
 
                 if preco_valido(convertido):
-
                     preco = convertido
-
-                    print(
-                        "💰 PREÇO JSON-LD:",
-                        preco
-                    )
+                    print("💰 PREÇO JSON-LD:", preco)
 
         except Exception as erro:
-
-            print(
-                "⚠️ Erro JSON-LD:",
-                repr(erro)
-            )
-
-        # ====================================================
-        # PREÇO HTML
-        # ====================================================
+            print("⚠️ Erro JSON-LD:", repr(erro))
 
         if preco is None:
-
-            precos = precos_do_html(
-                html_http
-            )
+            precos = precos_do_html(html_http)
 
             if precos:
-
-                precos = sorted(
-                    set(precos)
-                )
-
+                precos = sorted(set(precos))
                 preco = precos[0]
-
-                print(
-                    "💰 PREÇO HTML:",
-                    preco
-                )
-
-        # ====================================================
-        # PREÇO CONTEXTO
-        # ====================================================
+                print("💰 PREÇO HTML:", preco)
 
         if preco is None:
-
-            preco_contexto = preco_por_contexto(
-                html_http
-            )
+            preco_contexto = preco_por_contexto(html_http)
 
             if preco_contexto:
-
                 preco = preco_contexto
-
-                print(
-                    "💰 PREÇO CONTEXTO:",
-                    preco
-                )
-
-    # ========================================================
-    # 3. PLAYWRIGHT
-    # ========================================================
+                print("💰 PREÇO CONTEXTO:", preco)
 
     if (
         not nome
         or not preco
         or not imagem
     ):
-
         (
             nome_pw,
             preco_pw,
             imagem_pw
-        ) = tentar_playwright(
-            url_final
-        )
+        ) = tentar_playwright(url_final)
 
         if not nome and nome_pw:
-
             nome = nome_pw
-
-            print(
-                "🛒 NOME PLAYWRIGHT:",
-                nome
-            )
+            print("🛒 NOME PLAYWRIGHT:", nome)
 
         if not preco and preco_pw:
-
             preco = preco_pw
-
-            print(
-                "💰 PREÇO PLAYWRIGHT:",
-                preco
-            )
+            print("💰 PREÇO PLAYWRIGHT:", preco)
 
         if not imagem and imagem_pw:
-
             imagem = imagem_pw
-
-            print(
-                "🖼️ IMAGEM PLAYWRIGHT:",
-                imagem
-            )
-
-    # ========================================================
-    # 4. ÚLTIMA TENTATIVA
-    # ========================================================
+            print("🖼️ IMAGEM PLAYWRIGHT:", imagem)
 
     if html_http:
-
         if not nome:
-
-            nome = encontrar_nome_html(
-                html_http
-            )
+            nome = encontrar_nome_html(html_http)
 
         if not imagem:
-
-            imagem = encontrar_imagem_html(
-                html_http
-            )
+            imagem = encontrar_imagem_html(html_http)
 
         if not preco:
-
-            precos = precos_do_html(
-                html_http
-            )
+            precos = precos_do_html(html_http)
 
             if precos:
-
-                preco = sorted(
-                    set(precos)
-                )[0]
-
-    # ========================================================
-    # NORMALIZAÇÃO
-    # ========================================================
+                preco = sorted(set(precos))[0]
 
     if nome:
-
-        nome = limpar_texto(
-            nome
-        )
+        nome = limpar_texto(nome)
 
         nome = re.sub(
             r'\s*[-|]\s*Shopee.*$',
@@ -1795,25 +1234,14 @@ def extrair_dados_shopee(link):
         ).strip()
 
     if preco:
-
-        preco = converter_preco(
-            preco
-        )
+        preco = converter_preco(preco)
 
     if imagem:
-
-        imagem = normalizar_url(
-            imagem
-        )
-
-    # ========================================================
-    # FORMATAÇÃO
-    # ========================================================
+        imagem = normalizar_url(imagem)
 
     preco_formatado = None
 
     if preco:
-
         preco_formatado = (
             f"R$ {preco:,.2f}"
             .replace(",", "X")
@@ -1821,34 +1249,16 @@ def extrair_dados_shopee(link):
             .replace("X", ".")
         )
 
-    # ========================================================
-    # RESULTADO
-    # ========================================================
-
     print("")
     print("======================================")
     print("🔎 RESULTADO FINAL SHOPEE")
-    print(
-        "🛒 Nome:",
-        nome or "NÃO ENCONTRADO"
-    )
-    print(
-        "💰 Preço:",
-        preco_formatado or "NÃO ENCONTRADO"
-    )
-    print(
-        "🖼️ Imagem:",
-        imagem or "NÃO ENCONTRADA"
-    )
+    print("🛒 Nome:", nome or "NÃO ENCONTRADO")
+    print("💰 Preço:", preco_formatado or "NÃO ENCONTRADO")
+    print("🖼️ Imagem:", imagem or "NÃO ENCONTRADA")
     print("======================================")
     print("")
 
-    return (
-        nome,
-        preco_formatado,
-        imagem
-    )
-
+    return nome, preco_formatado, imagem
 
 # ============================================================
 # PUBLICAR
@@ -1859,11 +1269,7 @@ def publicar_proximo():
     fila = carregar_fila()
 
     if not fila:
-
-        print(
-            "📭 Fila vazia."
-        )
-
+        print("📭 Fila vazia.")
         return False
 
     produto = fila[0]
@@ -1873,17 +1279,9 @@ def publicar_proximo():
         "Produto Shopee"
     )
 
-    link = produto.get(
-        "link"
-    )
-
-    imagem = produto.get(
-        "imagem"
-    )
-
-    preco = produto.get(
-        "preco"
-    )
+    link = produto.get("link")
+    imagem = produto.get("imagem")
+    preco = produto.get("preco")
 
     oferta = (
         f"💰 {preco}"
@@ -1917,16 +1315,32 @@ def publicar_proximo():
         "ok": False
     }
 
+    print("")
+    print("======================================")
+    print("📤 TENTANDO PUBLICAR PRODUTO")
+    print("🛒 Nome:", nome)
+    print("💰 Preço:", preco or "não encontrado")
+    print("🖼️ Imagem:", imagem or "NÃO ENCONTRADA")
+    print("🔗 Link:", link)
+    print("======================================")
+
     # ========================================================
-    # IMAGEM
+    # ENVIAR FOTO
     # ========================================================
 
     if imagem:
 
         try:
 
-            # FOTO ENVIADA PELO TELEGRAM
-            if not imagem.startswith("http"):
+            # FOTO JÁ É FILE_ID DO TELEGRAM
+            if (
+                not imagem.startswith("http://")
+                and not imagem.startswith("https://")
+            ):
+
+                print(
+                    "📸 Imagem é FILE_ID do Telegram."
+                )
 
                 resposta = requests.post(
                     f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
@@ -1935,7 +1349,8 @@ def publicar_proximo():
                         "photo": imagem,
                         "caption": legenda,
                         "reply_markup": json.dumps(
-                            teclado
+                            teclado,
+                            ensure_ascii=False
                         )
                     },
                     timeout=30
@@ -1943,25 +1358,66 @@ def publicar_proximo():
 
                 resultado = resposta.json()
 
-            # URL DA SHOPEE
+                print(
+                    "📨 RESPOSTA TELEGRAM:",
+                    resultado
+                )
+
+            # URL DA IMAGEM
             else:
 
                 print(
-                    "🖼️ Baixando imagem..."
+                    "🌐 URL da imagem encontrada:"
+                )
+
+                print(imagem)
+
+                print(
+                    "⬇️ Baixando imagem..."
                 )
 
                 resposta_imagem = requests.get(
                     imagem,
                     headers=HEADERS,
-                    timeout=30
+                    timeout=40,
+                    allow_redirects=True
+                )
+
+                print(
+                    "📥 STATUS DOWNLOAD:",
+                    resposta_imagem.status_code
+                )
+
+                print(
+                    "📦 TAMANHO:",
+                    len(resposta_imagem.content),
+                    "bytes"
                 )
 
                 resposta_imagem.raise_for_status()
 
+                conteudo = resposta_imagem.content
+
+                content_type = (
+                    resposta_imagem.headers
+                    .get("Content-Type", "")
+                    .lower()
+                )
+
+                print(
+                    "🧾 CONTENT-TYPE:",
+                    content_type
+                )
+
+                if not conteudo:
+                    raise Exception(
+                        "A imagem veio vazia."
+                    )
+
                 arquivos = {
                     "photo": (
                         "produto.jpg",
-                        resposta_imagem.content,
+                        conteudo,
                         "image/jpeg"
                     )
                 }
@@ -1970,9 +1426,14 @@ def publicar_proximo():
                     "chat_id": CHAT_ID,
                     "caption": legenda,
                     "reply_markup": json.dumps(
-                        teclado
+                        teclado,
+                        ensure_ascii=False
                     )
                 }
+
+                print(
+                    "📤 Enviando foto para Telegram..."
+                )
 
                 resposta = requests.post(
                     f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
@@ -1983,18 +1444,46 @@ def publicar_proximo():
 
                 resultado = resposta.json()
 
+                print(
+                    "📨 RESPOSTA TELEGRAM:",
+                    resultado
+                )
+
         except Exception as erro:
 
+            print("")
             print(
-                "⚠️ Erro enviando imagem:",
+                "❌ ERRO AO ENVIAR IMAGEM"
+            )
+            print(
                 repr(erro)
             )
+            print("")
+
+            resultado = {
+                "ok": False,
+                "error": str(erro)
+            }
+
+    else:
+
+        print(
+            "⚠️ Produto não possui imagem."
+        )
 
     # ========================================================
-    # FALLBACK
+    # FALLBACK: SOMENTE TEXTO
     # ========================================================
 
     if not resultado.get("ok"):
+
+        print(
+            "⚠️ A foto não foi publicada."
+        )
+
+        print(
+            "➡️ Tentando publicar somente texto..."
+        )
 
         try:
 
@@ -2004,13 +1493,19 @@ def publicar_proximo():
                     "chat_id": CHAT_ID,
                     "text": legenda,
                     "reply_markup": json.dumps(
-                        teclado
+                        teclado,
+                        ensure_ascii=False
                     )
                 },
                 timeout=30
             )
 
             resultado = resposta.json()
+
+            print(
+                "📨 RESPOSTA TEXTO TELEGRAM:",
+                resultado
+            )
 
         except Exception as erro:
 
@@ -2029,9 +1524,7 @@ def publicar_proximo():
 
         fila.pop(0)
 
-        salvar_fila(
-            fila
-        )
+        salvar_fila(fila)
 
         print("")
         print(
@@ -2054,13 +1547,16 @@ def publicar_proximo():
 
         return True
 
+    print("")
     print(
-        "❌ Telegram recusou:",
+        "❌ TELEGRAM RECUSOU A PUBLICAÇÃO:"
+    )
+    print(
         resultado
     )
+    print("")
 
     return False
-
 
 # ============================================================
 # PUBLICADOR AUTOMÁTICO
@@ -2107,7 +1603,6 @@ def publicador_automatico():
 
         time.sleep(60)
 
-
 # ============================================================
 # FILA
 # ============================================================
@@ -2117,12 +1612,10 @@ def mostrar_fila(chat_id):
     fila = carregar_fila()
 
     if not fila:
-
         enviar_mensagem(
             chat_id,
             "📭 A fila está vazia."
         )
-
         return
 
     mensagem = (
@@ -2151,15 +1644,12 @@ def mostrar_fila(chat_id):
 
 def limpar_fila(chat_id):
 
-    salvar_fila(
-        []
-    )
+    salvar_fila([])
 
     enviar_mensagem(
         chat_id,
         "🗑️ Fila limpa com sucesso!"
     )
-
 
 # ============================================================
 # PROCESSAR MENSAGEM
@@ -2169,10 +1659,6 @@ def processar_mensagem(mensagem):
 
     chat_id = mensagem["chat"]["id"]
 
-    # ========================================================
-    # ADMIN
-    # ========================================================
-
     if ADMIN_ID:
 
         remetente = mensagem.get(
@@ -2180,10 +1666,7 @@ def processar_mensagem(mensagem):
             {}
         ).get("id")
 
-        if str(remetente) != str(
-            ADMIN_ID
-        ):
-
+        if str(remetente) != str(ADMIN_ID):
             return
 
     # ========================================================
@@ -2199,9 +1682,7 @@ def processar_mensagem(mensagem):
 
         linhas = [
             linha.strip()
-            for linha in legenda.split(
-                "\n"
-            )
+            for linha in legenda.split("\n")
             if linha.strip()
         ]
 
@@ -2222,9 +1703,7 @@ Link da Shopee"""
         nome = linhas[0]
         link = linhas[1]
 
-        if not link.startswith(
-            "http"
-        ):
+        if not link.startswith("http"):
 
             enviar_mensagem(
                 chat_id,
@@ -2237,20 +1716,13 @@ Link da Shopee"""
             nome_shopee,
             preco,
             imagem_shopee
-        ) = extrair_dados_shopee(
-            link
-        )
+        ) = extrair_dados_shopee(link)
 
         if nome_shopee:
             nome = nome_shopee
 
-        # A FOTO ENVIADA PELO TELEGRAM
-        # TEM PRIORIDADE.
-
-        file_id = (
-            mensagem["photo"][-1]["file_id"]
-        )
-
+        # A FOTO ENVIADA PELO TELEGRAM TEM PRIORIDADE.
+        file_id = mensagem["photo"][-1]["file_id"]
         imagem = file_id
 
         adicionado, posicao = adicionar_na_fila(
@@ -2295,10 +1767,6 @@ Link da Shopee"""
         ""
     ).strip()
 
-    # ========================================================
-    # START
-    # ========================================================
-
     if texto == "/start":
 
         enviar_mensagem(
@@ -2335,37 +1803,21 @@ COMANDOS:
 
         return
 
-    # ========================================================
-    # FILA
-    # ========================================================
-
     if texto == "/fila":
 
-        mostrar_fila(
-            chat_id
-        )
-
+        mostrar_fila(chat_id)
         return
-
-    # ========================================================
-    # LIMPAR
-    # ========================================================
 
     if texto == "/limparfila":
 
-        limpar_fila(
-            chat_id
-        )
-
+        limpar_fila(chat_id)
         return
 
     # ========================================================
     # SOMENTE LINK
     # ========================================================
 
-    if texto.startswith(
-        "http"
-    ):
+    if texto.startswith("http"):
 
         link = texto.split()[0]
 
@@ -2378,9 +1830,7 @@ COMANDOS:
             nome,
             preco,
             imagem
-        ) = extrair_dados_shopee(
-            link
-        )
+        ) = extrair_dados_shopee(link)
 
         if not nome:
 
@@ -2435,9 +1885,7 @@ Link da Shopee"""
 
     linhas = [
         linha.strip()
-        for linha in texto.split(
-            "\n"
-        )
+        for linha in texto.split("\n")
         if linha.strip()
     ]
 
@@ -2464,9 +1912,7 @@ Link da Shopee"""
     nome = linhas[0]
     link = linhas[1]
 
-    if not link.startswith(
-        "http"
-    ):
+    if not link.startswith("http"):
 
         enviar_mensagem(
             chat_id,
@@ -2479,9 +1925,7 @@ Link da Shopee"""
         nome_shopee,
         preco,
         imagem
-    ) = extrair_dados_shopee(
-        link
-    )
+    ) = extrair_dados_shopee(link)
 
     if nome_shopee:
         nome = nome_shopee
@@ -2516,7 +1960,6 @@ Link da Shopee"""
 
 ⏰ Será publicado automaticamente."""
     )
-
 
 # ============================================================
 # RECEBER TELEGRAM
@@ -2565,7 +2008,6 @@ def iniciar_bot():
                 )
 
                 time.sleep(5)
-
                 continue
 
             for update in dados.get(
@@ -2611,20 +2053,15 @@ def iniciar_bot():
 
             time.sleep(5)
 
-
 # ============================================================
 # SERVIDOR RENDER
 # ============================================================
 
-class Saude(
-    BaseHTTPRequestHandler
-):
+class Saude(BaseHTTPRequestHandler):
 
     def do_GET(self):
 
-        self.send_response(
-            200
-        )
+        self.send_response(200)
 
         self.send_header(
             "Content-Type",
@@ -2639,10 +2076,7 @@ class Saude(
 
     def do_HEAD(self):
 
-        self.send_response(
-            200
-        )
-
+        self.send_response(200)
         self.end_headers()
 
     def log_message(
@@ -2650,7 +2084,6 @@ class Saude(
         formato,
         *args
     ):
-
         pass
 
 
@@ -2673,7 +2106,6 @@ def servidor_saude():
     )
 
     servidor.serve_forever()
-
 
 # ============================================================
 # INICIAR SISTEMA
