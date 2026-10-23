@@ -856,9 +856,7 @@ if not imagem:
 
     try:
 
-        imagens = pagina.locator(
-            "img"
-        )
+        imagens = pagina.locator("img")
 
         quantidade_imagens = imagens.count()
 
@@ -891,7 +889,6 @@ if not imagem:
                         "data-lazy-src"
                     )
 
-                # Tenta também srcset
                 if not src:
 
                     srcset = elemento.get_attribute(
@@ -906,33 +903,7 @@ if not imagem:
                             .split(" ")[0]
                         )
 
-                if src and src.startswith(
-                    "http"
-                ):
-
-                    # Ignorar imagens pequenas,
-                    # ícones e logos quando possível
-                    largura = elemento.get_attribute(
-                        "width"
-                    )
-
-                    altura = elemento.get_attribute(
-                        "height"
-                    )
-
-                    if largura and altura:
-
-                        try:
-
-                            if (
-                                int(largura) < 100
-                                or int(altura) < 100
-                            ):
-                                continue
-
-                        except Exception:
-
-                            pass
+                if src and src.startswith("http"):
 
                     imagem = src
 
@@ -943,7 +914,12 @@ if not imagem:
 
                     break
 
-            except Exception:
+            except Exception as erro:
+
+                print(
+                    "⚠️ Erro em uma imagem:",
+                    erro
+                )
 
                 continue
 
