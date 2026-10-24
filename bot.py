@@ -1,633 +1,193 @@
-
+import asyncio
+import json
+import logging
+import os
+import re
+import sqlite3
+from html import escape
+from urllib.parse import urljoin
 
 import requests
-import json
-import os
-import time
-import threading
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-# ==========================================
-# CONFIGURAÇÕES
-# ==========================================
+# ---------------- CONFIG ----------------
+BOT_TOKEN = os.environ["BOT_TOKEN"]        # token do @BotFather
+OWNER_ID = int(os.environ["OWNER_ID"])     # seu ID numérico (use o @userinfobot)
+CHANNEL_ID = os.environ["CHANNEL_ID"]      # @seucanal ou -100xxxxxxxxxx
 
-TOKEN = "8262222708:AAFFONldD3JYY6xmfHqO59Fp5Z922LOlkLc"
-CHAT_ID = "-1003905816059"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept-Language": "pt-BR,pt;q=0.9",
+}
+URL_RE = re.compile(r"https?://\S+")
+PRICE_RE = re.compile(r"R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}")
 
-INTERVALO = 3600
-ARQUIVO_FILA = "fila.json"
+logging.basicConfig(level=logging.INFO)
 
-
-# ==========================================
-# FILA
-# ==========================================
-
-def carregar_fila():
-
-    if not os.path.exists(ARQUIVO_FILA):
-        return []
-
-    try:
-        with open(
-            ARQUIVO_FILA,
-            "r",
-            encoding="utf-8"
-        ) as arquivo:
-
-            return json.load(arquivo)
-
-    except Exception as erro:
-
-        print("❌ Erro ao carregar fila:", erro)
-        return []
+# ---------------- BANCO ----------------
+db = sqlite3.connect("produtos.db", check_same_thread=False)
+db.execute(
+    """CREATE TABLE IF NOT EXISTS produtos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT, titulo TEXT, preco TEXT, imagem TEXT,
+        criado_em TEXT DEFAULT CURRENT_TIMESTAMP
+    )"""
+)
+db.commit()
 
 
-def salvar_fila(fila):
-
-    with open(
-        ARQUIVO_FILA,
-        "w",
-        encoding="utf-8"
-    ) as arquivo:
-
-        json.dump(
-            fila,
-            arquivo,
-            ensure_ascii=False,
-            indent=4
+# ---------------- EXTRAÇÃO ----------------
+def meta(soup, *nomes):
+    for n in nomes:
+        tag = soup.find("meta", attrs={"property": n}) or soup.find(
+            "meta", attrs={"name": n}
         )
+        if tag and tag.get("content"):
+            return tag["content"].strip()
+    return None
 
 
-def adicionar_na_fila(nome, link, imagem=None):
-
-    fila = carregar_fila()
-
-    for produto in fila:
-
-        if produto["link"] == link:
-
-            return False, len(fila)
-
-    produto = {
-        "nome": nome,
-        "link": link,
-        "imagem": imagem
-    }
-
-    fila.append(produto)
-
-    salvar_fila(fila)
-
-    return True, len(fila)
+def achar_preco_json(obj):
+    if isinstance(obj, dict):
+        for k in ("price", "lowPrice"):
+            if obj.get(k) not in (None, ""):
+                return obj[k]
+        for v in obj.values():
+            r = achar_preco_json(v)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = achar_preco_json(v)
+            if r:
+                return r
+    return None
 
 
-# ==========================================
-# TELEGRAM
-# ==========================================
+def formatar_preco(valor):
+    """Converte 1234.5 / '1.234,50' / '99,9' em 'R$ 1.234,50'."""
+    try:
+        s = str(valor).strip()
+        s = re.sub(r"[^\d.,]", "", s)
+        if "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        n = float(s)
+        return "R$ " + f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return None
 
-def enviar_mensagem(chat_id, texto):
 
-    url = (
-        f"https://api.telegram.org/"
-        f"bot{TOKEN}/sendMessage"
+def extrair(url):
+    r = requests.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    final_url = r.url
+
+    titulo = meta(soup, "og:title", "twitter:title") or (
+        soup.title.string.strip() if soup.title and soup.title.string else "Produto"
     )
 
-    dados = {
-        "chat_id": chat_id,
-        "text": texto
-    }
-
-    try:
-
-        resposta = requests.post(
-            url,
-            data=dados,
-            timeout=30
-        )
-
-        return resposta.json()
-
-    except Exception as erro:
-
-        print("❌ Erro Telegram:", erro)
-
-        return {"ok": False}
-
-
-# ==========================================
-# PUBLICAR PRODUTO
-# ==========================================
-
-def publicar_proximo():
-
-    fila = carregar_fila()
-
-    if not fila:
-
-        print("📭 Fila vazia.")
-
-        return
-
-
-    produto = fila[0]
-
-    nome = produto["nome"]
-    link = produto["link"]
-    imagem = produto.get("imagem")
-
-
-    legenda = f"""🔥 ACHADINHO DA SHOPEE
-
-🛒 {nome}
-
-💰 Confira o preço e as opções disponíveis!"""
-
-
-    teclado = {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "🛒 COMPRAR AGORA",
-                    "url": link
-                }
-            ]
-        ]
-    }
-
-
-    # ======================================
-    # COM FOTO
-    # ======================================
-
+    imagem = meta(soup, "og:image", "twitter:image")
+    if not imagem:
+        img = soup.find("img", src=True)
+        imagem = img["src"] if img else None
     if imagem:
+        imagem = urljoin(final_url, imagem)
 
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{TOKEN}/sendPhoto"
-        )
+    # preço: meta tags -> JSON-LD -> regex "R$ 00,00"
+    preco = meta(
+        soup, "product:price:amount", "og:price:amount", "twitter:data1"
+    )
+    if not preco:
+        for s in soup.find_all("script", type="application/ld+json"):
+            try:
+                preco = achar_preco_json(json.loads(s.string or ""))
+            except Exception:
+                continue
+            if preco:
+                break
+    if preco:
+        preco = formatar_preco(preco)
+    if not preco:
+        m = PRICE_RE.search(soup.get_text(" ", strip=True))
+        preco = m.group(0) if m else None
 
-        dados = {
-            "chat_id": CHAT_ID,
-            "photo": imagem,
-            "caption": legenda,
-            "reply_markup": json.dumps(teclado)
-        }
+    return {"url": final_url, "titulo": titulo, "preco": preco, "imagem": imagem}
 
-    # ======================================
-    # SEM FOTO
-    # ======================================
 
-    else:
+# ---------------- HANDLER ----------------
+async def receber_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    texto = msg.text or ""
+    m = URL_RE.search(texto)
+    if not m:
+        return
 
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{TOKEN}/sendMessage"
-        )
+    url = m.group(0)
+    # opcional: "link 99,90" para forçar o preço manualmente
+    resto = texto.replace(url, "").strip()
+    preco_manual = formatar_preco(resto) if re.search(r"\d", resto) else None
 
-        dados = {
-            "chat_id": CHAT_ID,
-            "text": legenda,
-            "reply_markup": json.dumps(teclado)
-        }
-
+    await msg.reply_text("🔎 Lendo o link...")
 
     try:
-
-        resposta = requests.post(
-            url,
-            data=dados,
-            timeout=30
-        )
-
-        resultado = resposta.json()
-
-    except Exception as erro:
-
-        print("❌ Erro ao publicar:", erro)
-
+        dados = await asyncio.to_thread(extrair, url)
+    except Exception as e:
+        await msg.reply_text(f"❌ Não consegui ler o link: {e}")
         return
 
+    if preco_manual:
+        dados["preco"] = preco_manual
 
-    # ======================================
-    # SUCESSO
-    # ======================================
-
-    if resultado.get("ok"):
-
-        fila.pop(0)
-
-        salvar_fila(fila)
-
-        print("================================")
-        print("✅ PRODUTO PUBLICADO")
-        print("🛒", nome)
-        print("📦 Restam:", len(fila))
-        print("================================")
-
-    else:
-
-        print("❌ Telegram recusou a publicação.")
-        print(resultado)
-        print("⚠️ Produto continua na fila.")
-
-
-# ==========================================
-# PUBLICADOR AUTOMÁTICO
-# ==========================================
-
-def publicador_automatico():
-
-    print("🚀 Publicador automático iniciado.")
-    print("⏰ Intervalo: 1 hora.")
-
-    while True:
-
-        try:
-
-            publicar_proximo()
-
-        except Exception as erro:
-
-            print("❌ Erro:", erro)
-
-        print("💤 Aguardando 1 hora...")
-
-        time.sleep(INTERVALO)
-
-
-# ==========================================
-# MOSTRAR FILA
-# ==========================================
-
-def mostrar_fila(chat_id):
-
-    fila = carregar_fila()
-
-    if not fila:
-
-        enviar_mensagem(
-            chat_id,
-            "📭 A fila está vazia."
-        )
-
-        return
-
-
-    mensagem = "📦 PRODUTOS NA FILA\n\n"
-
-
-    for numero, produto in enumerate(
-        fila,
-        start=1
-    ):
-
-        mensagem += (
-            f"{numero}. 🛒 {produto['nome']}\n"
-            f"🔗 {produto['link']}\n\n"
-        )
-
-
-    enviar_mensagem(
-        chat_id,
-        mensagem
+    # salva no banco
+    db.execute(
+        "INSERT INTO produtos (url, titulo, preco, imagem) VALUES (?, ?, ?, ?)",
+        (dados["url"], dados["titulo"], dados["preco"], dados["imagem"]),
     )
+    db.commit()
+
+    legenda = f"<b>{escape(dados['titulo'][:200])}</b>\n\n"
+    legenda += f"💰 {escape(dados['preco'])}\n\n" if dados["preco"] else ""
+    legenda += f"🛒 <a href=\"{escape(dados['url'], quote=True)}\">Ver produto</a>"
+
+    try:
+        if dados["imagem"]:
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=dados["imagem"],
+                caption=legenda[:1024],
+                parse_mode="HTML",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID, text=legenda, parse_mode="HTML"
+            )
+    except Exception as e:
+        await msg.reply_text(f"❌ Erro ao publicar: {e}")
+        return
+
+    aviso = "✅ Publicado!"
+    if not dados["preco"]:
+        aviso += "\n⚠️ Preço não encontrado. Da próxima vez mande: link 99,90"
+    await msg.reply_text(aviso)
 
 
-# ==========================================
-# LIMPAR FILA
-# ==========================================
-
-def limpar_fila(chat_id):
-
-    salvar_fila([])
-
-    enviar_mensagem(
-        chat_id,
-        "🗑️ Fila limpa com sucesso!"
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # só aceita mensagens de texto vindas de você
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.User(user_id=OWNER_ID),
+            receber_link,
+        )
     )
+    app.run_polling()
 
 
-# ==========================================
-# PROCESSAR MENSAGEM
-# ==========================================
-
-def processar_mensagem(mensagem):
-
-    chat_id = mensagem["chat"]["id"]
-
-
-    # ======================================
-    # FOTO + LEGENDA
-    # ======================================
-
-    if "photo" in mensagem:
-
-        fotos = mensagem["photo"]
-
-        # Maior resolução disponível
-        foto = fotos[-1]
-
-        file_id = foto["file_id"]
-
-        legenda = mensagem.get(
-            "caption",
-            ""
-        ).strip()
-
-
-        linhas = [
-            linha.strip()
-            for linha in legenda.split("\n")
-            if linha.strip()
-        ]
-
-
-        if len(linhas) < 2:
-
-            enviar_mensagem(
-                chat_id,
-                """❌ Formato incorreto.
-
-Envie a FOTO com esta legenda:
-
-Nome do produto
-Link da Shopee"""
-            )
-
-            return
-
-
-        nome = linhas[0]
-        link = linhas[1]
-
-
-        if not link.startswith("http"):
-
-            enviar_mensagem(
-                chat_id,
-                "❌ O link informado não é válido."
-            )
-
-            return
-
-
-        adicionado, posicao = adicionar_na_fila(
-            nome,
-            link,
-            file_id
-        )
-
-
-        if not adicionado:
-
-            enviar_mensagem(
-                chat_id,
-                "⚠️ Esse produto já está na fila."
-            )
-
-            return
-
-
-        enviar_mensagem(
-            chat_id,
-            f"""✅ PRODUTO ADICIONADO!
-
-🛒 {nome}
-
-📦 Posição na fila: {posicao}
-
-🖼️ Foto salva.
-⏰ Publicação automática ativa."""
-        )
-
-        return
-
-
-    # ======================================
-    # TEXTO
-    # ======================================
-
-    texto = mensagem.get(
-        "text",
-        ""
-    ).strip()
-
-
-    # ======================================
-    # START
-    # ======================================
-
-    if texto == "/start":
-
-        enviar_mensagem(
-            chat_id,
-            """🤖 ACHADOS DA SHOPEE
-
-📸 Para adicionar produto:
-
-Envie uma FOTO com a legenda:
-
-Nome do produto
-Link da Shopee
-
-Comandos:
-
-/fila
-Ver fila
-
-/limparfila
-Limpar fila"""
-        )
-
-        return
-
-
-    # ======================================
-    # FILA
-    # ======================================
-
-    if texto == "/fila":
-
-        mostrar_fila(chat_id)
-
-        return
-
-
-    # ======================================
-    # LIMPAR FILA
-    # ======================================
-
-    if texto == "/limparfila":
-
-        limpar_fila(chat_id)
-
-        return
-
-
-    # ======================================
-    # TEXTO SEM FOTO
-    # ======================================
-
-    linhas = [
-        linha.strip()
-        for linha in texto.split("\n")
-        if linha.strip()
-    ]
-
-
-    if len(linhas) < 2:
-
-        enviar_mensagem(
-            chat_id,
-            """❌ Formato incorreto.
-
-Envie uma FOTO com:
-
-Nome do produto
-Link da Shopee"""
-        )
-
-        return
-
-
-    nome = linhas[0]
-    link = linhas[1]
-
-
-    if not link.startswith("http"):
-
-        enviar_mensagem(
-            chat_id,
-            "❌ Link inválido."
-        )
-
-        return
-
-
-    adicionado, posicao = adicionar_na_fila(
-        nome,
-        link
-    )
-
-
-    if not adicionado:
-
-        enviar_mensagem(
-            chat_id,
-            "⚠️ Esse produto já está na fila."
-        )
-
-        return
-
-
-    enviar_mensagem(
-        chat_id,
-        f"""✅ PRODUTO ADICIONADO!
-
-🛒 {nome}
-
-📦 Posição: {posicao}
-
-⏰ Será publicado automaticamente."""
-    )
-
-
-# ==========================================
-# RECEBER TELEGRAM
-# ==========================================
-
-def iniciar_bot():
-
-    print("📥 Sistema de recebimento iniciado.")
-
-    ultimo_update = None
-
-    while True:
-
-        try:
-
-            url = (
-                f"https://api.telegram.org/"
-                f"bot{TOKEN}/getUpdates"
-            )
-
-            parametros = {
-                "timeout": 30
-            }
-
-
-            if ultimo_update is not None:
-
-                parametros["offset"] = (
-                    ultimo_update + 1
-                )
-
-
-            resposta = requests.get(
-                url,
-                params=parametros,
-                timeout=35
-            )
-
-
-            dados = resposta.json()
-
-
-            if not dados.get("ok"):
-
-                print("❌ Erro Telegram:", dados)
-
-                time.sleep(5)
-
-                continue
-
-
-            for update in dados["result"]:
-
-                ultimo_update = update[
-                    "update_id"
-                ]
-
-
-                if "message" in update:
-
-                    processar_mensagem(
-                        update["message"]
-                    )
-
-
-        except Exception as erro:
-
-            print("❌ Erro:", erro)
-
-            time.sleep(5)
-
-
-# ==========================================
-# INICIAR
-# ==========================================
-
-thread_bot = threading.Thread(
-    target=iniciar_bot,
-    daemon=True
-)
-
-thread_publicador = threading.Thread(
-    target=publicador_automatico,
-    daemon=True
-)
-
-
-thread_bot.start()
-thread_publicador.start()
-
-
-print("")
-print("======================================")
-print("✅ SISTEMA COMPLETO ATIVO")
-print("📥 Recebimento: ATIVO")
-print("📦 Fila: ATIVA")
-print("🖼️ Fotos: ATIVAS")
-print("🔘 Botão de compra: ATIVO")
-print("🚀 Publicação: ATIVA")
-print("⏰ 1 PRODUTO POR HORA")
-print("======================================")
+if __name__ == "__main__":
+    main()
