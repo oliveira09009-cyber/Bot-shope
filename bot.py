@@ -10,7 +10,7 @@ import threading
 # CONFIGURAÇÕES
 # ==========================================
 
-TOKEN = "8262222708:AAGHH1nAtDGMKiNmvemrfnGoodag7ioRRQY"
+TOKEN = "8262222708:AAFFONldD3JYY6xmfHqO59Fp5Z922LOlkLc"
 CHAT_ID = "-1003905816059"
 
 INTERVALO = 3600
