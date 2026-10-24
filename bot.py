@@ -22,17 +22,18 @@ REDIS_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
 ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # ============================================================
-# PUBLICAÇÃO
+# 5 PRODUTOS POR HORA
+# 60 minutos / 5 = 12 minutos
 # ============================================================
 
-# 5 produtos por hora = 1 produto a cada 12 minutos
 INTERVALO = 12 * 60
 
-# Quantidade máxima de tentativas para um produto sem imagem
-MAX_TENTATIVAS = 3
+# ============================================================
+# TEMPO DA TRAVA DE PUBLICAÇÃO
+# Impede duas instâncias do Render publicarem juntas
+# ============================================================
 
-# Tempo do loop interno
-CICLO = 30
+LOCK_TTL = 90
 
 
 # ============================================================
@@ -51,7 +52,8 @@ HEADERS = {
         "*/*;q=0.8"
     ),
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
-    "Referer": "https://shopee.com.br/"
+    "Referer": "https://shopee.com.br/",
+    "Cache-Control": "no-cache",
 }
 
 
@@ -130,7 +132,9 @@ def adicionar_na_fila(
     nome,
     link,
     imagem=None,
-    preco=None
+    preco=None,
+    preco_antigo=None,
+    desconto=None
 ):
 
     fila = carregar_fila()
@@ -142,11 +146,12 @@ def adicionar_na_fila(
             return False, len(fila)
 
     produto = {
-        "nome": nome or None,
+        "nome": nome or "Produto Shopee",
         "link": link,
         "imagem": imagem,
         "preco": preco,
-        "tentativas": 0,
+        "preco_antigo": preco_antigo,
+        "desconto": desconto,
         "criado_em": int(time.time())
     }
 
@@ -178,6 +183,7 @@ def telegram_post(
         )
 
         try:
+
             resultado = resposta.json()
 
         except Exception:
@@ -279,30 +285,23 @@ def limpar_texto(valor):
         str(valor)
     )
 
-    valor = valor.replace(
-        "\\/",
-        "/"
-    )
+    # Decodifica escapes comuns
+    substituicoes = {
+        "\\/": "/",
+        "\\u002F": "/",
+        "\\u003A": ":",
+        "\\u0026": "&",
+        "\\u003F": "?",
+        "\\u003D": "=",
+        "\\u0025": "%",
+    }
 
-    valor = valor.replace(
-        "\\u002F",
-        "/"
-    )
+    for antigo, novo in substituicoes.items():
 
-    valor = valor.replace(
-        "\\u003A",
-        ":"
-    )
-
-    valor = valor.replace(
-        "\\u0026",
-        "&"
-    )
-
-    valor = valor.replace(
-        "\\u003F",
-        "?"
-    )
+        valor = valor.replace(
+            antigo,
+            novo
+        )
 
     valor = re.sub(
         r"<[^>]+>",
@@ -329,10 +328,16 @@ def normalizar_url(url):
     if not url:
         return None
 
+    url = url.strip(
+        "\"' ,;"
+    )
+
     if url.startswith("//"):
+
         url = "https:" + url
 
     elif url.startswith("/"):
+
         url = urljoin(
             "https://shopee.com.br/",
             url
@@ -445,6 +450,7 @@ def procurar_jsonld_produto(dados):
     nome = None
     imagem = None
     preco = None
+    preco_antigo = None
 
     for item in dados:
 
@@ -485,7 +491,6 @@ def procurar_jsonld_produto(dados):
             preco = (
                 ofertas.get("price")
                 or ofertas.get("lowPrice")
-                or ofertas.get("highPrice")
             )
 
         break
@@ -501,12 +506,13 @@ def procurar_jsonld_produto(dados):
     return (
         limpar_texto(nome),
         normalizar_url(imagem),
-        preco
+        converter_preco(preco),
+        converter_preco(preco_antigo)
     )
 
 
 # ============================================================
-# PREÇO
+# CONVERTER PREÇO
 # ============================================================
 
 def converter_preco(valor):
@@ -525,9 +531,11 @@ def converter_preco(valor):
             texto
             .replace("R$", "")
             .replace("BRL", "")
+            .replace("brl", "")
             .replace(" ", "")
         )
 
+        # R$ 78,56
         if "," in texto:
 
             texto = texto.replace(
@@ -549,7 +557,7 @@ def converter_preco(valor):
         if numero <= 0:
             return None
 
-        # Valores internos comuns
+        # Valores internos comuns da Shopee
         if numero >= 1000000:
 
             numero /= 100000
@@ -558,14 +566,12 @@ def converter_preco(valor):
 
             numero /= 100
 
-        elif (
-            numero >= 1000
-            and numero.is_integer()
-        ):
+        elif numero >= 1000 and numero.is_integer():
 
             numero /= 100
 
         if numero <= 0 or numero > 500000:
+
             return None
 
         return round(
@@ -578,24 +584,44 @@ def converter_preco(valor):
         return None
 
 
-def preco_valido(valor):
+# ============================================================
+# FORMATAR PREÇO
+# ============================================================
 
-    numero = converter_preco(valor)
+def formatar_preco(valor):
+
+    numero = converter_preco(
+        valor
+    )
+
+    if numero is None:
+        return None
 
     return (
-        numero is not None
-        and 0.01 <= numero <= 500000
+        f"R$ {numero:,.2f}"
+        .replace(",", "X")
+        .replace(".", ",")
+        .replace("X", ".")
     )
 
 
-def precos_do_html(html):
+# ============================================================
+# ENCONTRAR PREÇOS
+# ============================================================
+
+def extrair_precos_html(html):
 
     if not html:
-        return []
+        return None, None
 
-    candidatos = []
+    atuais = []
+    antigos = []
 
-    padroes = [
+    # --------------------------------------------------------
+    # PREÇO ATUAL
+    # --------------------------------------------------------
+
+    padroes_atual = [
 
         r'"price"\s*:\s*"([^"]+)"',
         r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
@@ -609,6 +635,9 @@ def precos_do_html(html):
         r'"salePrice"\s*:\s*"([^"]+)"',
         r'"salePrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
+        r'"sale_price"\s*:\s*"([^"]+)"',
+        r'"sale_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
         r'"currentPrice"\s*:\s*"([^"]+)"',
         r'"currentPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
@@ -618,14 +647,11 @@ def precos_do_html(html):
         r'"final_price"\s*:\s*"([^"]+)"',
         r'"final_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
 
-        r'"sale_price"\s*:\s*"([^"]+)"',
-        r'"sale_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
-
         r'"display_price"\s*:\s*"([^"]+)"',
         r'"display_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)'
     ]
 
-    for padrao in padroes:
+    for padrao in padroes_atual:
 
         encontrados = re.findall(
             padrao,
@@ -639,13 +665,143 @@ def precos_do_html(html):
                 valor
             )
 
-            if preco_valido(numero):
+            if (
+                numero is not None
+                and 0.01 <= numero <= 500000
+            ):
 
-                candidatos.append(
+                atuais.append(
                     numero
                 )
 
-    return candidatos
+    # --------------------------------------------------------
+    # PREÇO ANTIGO
+    # --------------------------------------------------------
+
+    padroes_antigo = [
+
+        r'"price_before_discount"\s*:\s*"([^"]+)"',
+        r'"price_before_discount"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+        r'"priceBeforeDiscount"\s*:\s*"([^"]+)"',
+        r'"priceBeforeDiscount"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+        r'"originalPrice"\s*:\s*"([^"]+)"',
+        r'"originalPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+        r'"original_price"\s*:\s*"([^"]+)"',
+        r'"original_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+        r'"marketPrice"\s*:\s*"([^"]+)"',
+        r'"marketPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+        r'"market_price"\s*:\s*"([^"]+)"',
+        r'"market_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+        r'"listPrice"\s*:\s*"([^"]+)"',
+        r'"listPrice"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+
+        r'"list_price"\s*:\s*"([^"]+)"',
+        r'"list_price"\s*:\s*([0-9]+(?:\.[0-9]+)?)'
+    ]
+
+    for padrao in padroes_antigo:
+
+        encontrados = re.findall(
+            padrao,
+            html,
+            re.IGNORECASE
+        )
+
+        for valor in encontrados:
+
+            numero = converter_preco(
+                valor
+            )
+
+            if (
+                numero is not None
+                and 0.01 <= numero <= 500000
+            ):
+
+                antigos.append(
+                    numero
+                )
+
+    atuais = sorted(
+        set(atuais)
+    )
+
+    antigos = sorted(
+        set(antigos)
+    )
+
+    preco_atual = (
+        atuais[0]
+        if atuais
+        else None
+    )
+
+    preco_antigo = None
+
+    if preco_atual:
+
+        maiores = [
+            x
+            for x in antigos
+            if x > preco_atual
+        ]
+
+        if maiores:
+
+            # Pega o preço anterior mais próximo
+            preco_antigo = min(
+                maiores,
+                key=lambda x: x - preco_atual
+            )
+
+    return (
+        preco_atual,
+        preco_antigo
+    )
+
+
+# ============================================================
+# DESCONTO
+# ============================================================
+
+def calcular_desconto(
+    preco,
+    preco_antigo
+):
+
+    preco = converter_preco(
+        preco
+    )
+
+    preco_antigo = converter_preco(
+        preco_antigo
+    )
+
+    if not preco or not preco_antigo:
+        return None
+
+    if preco_antigo <= preco:
+        return None
+
+    desconto = (
+        (preco_antigo - preco)
+        / preco_antigo
+    ) * 100
+
+    desconto = round(
+        desconto
+    )
+
+    if desconto <= 0 or desconto >= 100:
+        return None
+
+    return desconto
 
 
 # ============================================================
@@ -664,7 +820,9 @@ def encontrar_imagens_html(html):
         if not url:
             return
 
-        url = normalizar_url(url)
+        url = normalizar_url(
+            url
+        )
 
         if not url:
             return
@@ -690,10 +848,12 @@ def encontrar_imagens_html(html):
 
         if url not in candidatos:
 
-            candidatos.append(url)
+            candidatos.append(
+                url
+            )
 
     # --------------------------------------------------------
-    # OG IMAGE
+    # META
     # --------------------------------------------------------
 
     adicionar(
@@ -710,8 +870,22 @@ def encontrar_imagens_html(html):
         )
     )
 
+    adicionar(
+        extrair_meta(
+            html,
+            "twitter:image"
+        )
+    )
+
+    adicionar(
+        extrair_meta(
+            html,
+            "twitter:image:src"
+        )
+    )
+
     # --------------------------------------------------------
-    # IMAGENS SUSERCONTENT
+    # PADRÕES SHOPEE
     # --------------------------------------------------------
 
     padroes = [
@@ -740,7 +914,11 @@ def encontrar_imagens_html(html):
 
         r'"originalImage"\s*:\s*"([^"]+)"',
 
-        r'"original_image"\s*:\s*"([^"]+)"'
+        r'"original_image"\s*:\s*"([^"]+)"',
+
+        r'"imageFullUrl"\s*:\s*"([^"]+)"',
+
+        r'"image_full_url"\s*:\s*"([^"]+)"'
     ]
 
     for padrao in padroes:
@@ -757,13 +935,33 @@ def encontrar_imagens_html(html):
                 encontrado
             )
 
-            if len(candidatos) >= 30:
+            if len(candidatos) >= 50:
                 break
 
-        if len(candidatos) >= 30:
+        if len(candidatos) >= 50:
             break
 
-    return candidatos
+    # --------------------------------------------------------
+    # REMOVER DUPLICADAS
+    # --------------------------------------------------------
+
+    unicos = []
+    vistos = set()
+
+    for url in candidatos:
+
+        chave = url.lower()
+
+        if chave in vistos:
+            continue
+
+        vistos.add(chave)
+
+        unicos.append(
+            url
+        )
+
+    return unicos
 
 
 def encontrar_imagem_html(html):
@@ -772,15 +970,14 @@ def encontrar_imagem_html(html):
         html
     )
 
+    # Primeiro: imagem oficial da Shopee
     for url in imagens:
 
-        if (
-            "susercontent.com/file/"
-            in url.lower()
-        ):
+        if "susercontent.com/file/" in url.lower():
 
             return url
 
+    # Segundo: qualquer CDN da Shopee
     for url in imagens:
 
         if "susercontent.com" in url.lower():
@@ -803,12 +1000,17 @@ def encontrar_nome_html(html):
     if not html:
         return None
 
+    # OG TITLE
     nome = extrair_meta(
         html,
         "og:title"
     )
 
     if nome:
+
+        nome = limpar_texto(
+            nome
+        )
 
         if (
             len(nome) >= 5
@@ -821,6 +1023,7 @@ def encontrar_nome_html(html):
 
             return nome
 
+    # TITLE
     titulo = re.search(
         r'<title[^>]*>(.*?)</title>',
         html,
@@ -845,64 +1048,30 @@ def encontrar_nome_html(html):
 
 
 # ============================================================
-# FORMATAÇÕES
-# ============================================================
-
-def formatar_preco(valor):
-
-    numero = converter_preco(
-        valor
-    )
-
-    if numero is None:
-        return None
-
-    return (
-        f"R$ {numero:,.2f}"
-        .replace(",", "X")
-        .replace(".", ",")
-        .replace("X", ".")
-    )
-
-
-def nome_valido(nome):
-
-    if not nome:
-        return False
-
-    texto = limpar_texto(
-        nome
-    )
-
-    if not texto:
-        return False
-
-    if len(texto) < 5:
-        return False
-
-    if texto.lower() in (
-        "produto",
-        "produto shopee",
-        "shopee",
-        "oferta especial"
-    ):
-        return False
-
-    return True
-
-
-# ============================================================
 # LEITOR SHOPEE
 # ============================================================
 
 def extrair_dados_shopee(link):
 
     print("")
-    print("🔎 LENDO SHOPEE")
-    print("🔗", link)
+    print(
+        "🔎 ======================================"
+    )
+    print(
+        "🔎 LENDO SHOPEE"
+    )
+    print(
+        "🔗",
+        link
+    )
+    print(
+        "🔎 ======================================"
+    )
 
     nome = None
     preco = None
+    preco_antigo = None
+    desconto = None
     imagem = None
 
     try:
@@ -921,17 +1090,23 @@ def extrair_dados_shopee(link):
         )
 
         print(
-            "🔗 URL FINAL:",
+            "🔗 URL final:",
             resposta.url
         )
 
         if resposta.status_code != 200:
 
             print(
-                "❌ Shopee não respondeu HTTP 200"
+                "❌ Shopee não retornou HTTP 200"
             )
 
-            return None, None, None
+            return (
+                None,
+                None,
+                None,
+                None,
+                None
+            )
 
         html = resposta.text
 
@@ -970,15 +1145,13 @@ def extrair_dados_shopee(link):
             (
                 nome_json,
                 imagem_json,
-                preco_json
+                preco_json,
+                antigo_json
             ) = procurar_jsonld_produto(
                 dados
             )
 
-            if (
-                not nome
-                and nome_valido(nome_json)
-            ):
+            if not nome and nome_json:
 
                 nome = nome_json
 
@@ -988,13 +1161,11 @@ def extrair_dados_shopee(link):
 
             if preco_json:
 
-                numero = converter_preco(
-                    preco_json
-                )
+                preco = preco_json
 
-                if preco_valido(numero):
+            if antigo_json:
 
-                    preco = numero
+                preco_antigo = antigo_json
 
         except Exception as erro:
 
@@ -1004,24 +1175,34 @@ def extrair_dados_shopee(link):
             )
 
         # ----------------------------------------------------
-        # PREÇO
+        # PREÇOS DO HTML
         # ----------------------------------------------------
+
+        preco_html, antigo_html = (
+            extrair_precos_html(
+                html
+            )
+        )
 
         if preco is None:
 
-            precos = precos_do_html(
-                html
-            )
+            preco = preco_html
 
-            if precos:
+        if preco_antigo is None:
 
-                # Menor preço encontrado
-                preco = min(
-                    precos
-                )
+            preco_antigo = antigo_html
 
         # ----------------------------------------------------
-        # LIMPEZA NOME
+        # DESCONTO
+        # ----------------------------------------------------
+
+        desconto = calcular_desconto(
+            preco,
+            preco_antigo
+        )
+
+        # ----------------------------------------------------
+        # LIMPEZA DO NOME
         # ----------------------------------------------------
 
         if nome:
@@ -1038,17 +1219,7 @@ def extrair_dados_shopee(link):
             ).strip()
 
         # ----------------------------------------------------
-        # PREÇO
-        # ----------------------------------------------------
-
-        if preco:
-
-            preco = formatar_preco(
-                preco
-            )
-
-        # ----------------------------------------------------
-        # IMAGEM
+        # NORMALIZAR IMAGEM
         # ----------------------------------------------------
 
         if imagem:
@@ -1057,24 +1228,48 @@ def extrair_dados_shopee(link):
                 imagem
             )
 
+        # ----------------------------------------------------
+        # RESULTADO
+        # ----------------------------------------------------
+
         print("")
-        print("📋 RESULTADO DA LEITURA")
         print(
             "🛒 Nome:",
             nome or "NÃO ENCONTRADO"
         )
+
         print(
             "💰 Preço:",
-            preco or "NÃO ENCONTRADO"
+            formatar_preco(preco)
+            or "NÃO ENCONTRADO"
         )
+
+        print(
+            "🏷️ Preço antigo:",
+            formatar_preco(preco_antigo)
+            or "NÃO ENCONTRADO"
+        )
+
+        print(
+            "🔥 Desconto:",
+            f"{desconto}%"
+            if desconto
+            else "NÃO ENCONTRADO"
+        )
+
         print(
             "🖼️ Imagem:",
-            imagem or "NÃO ENCONTRADA"
+            imagem
+            or "NÃO ENCONTRADA"
         )
+
+        print("")
 
         return (
             nome,
-            preco,
+            formatar_preco(preco),
+            formatar_preco(preco_antigo),
+            desconto,
             imagem
         )
 
@@ -1087,7 +1282,9 @@ def extrair_dados_shopee(link):
 
         return (
             nome,
-            preco,
+            formatar_preco(preco),
+            formatar_preco(preco_antigo),
+            desconto,
             imagem
         )
 
@@ -1104,7 +1301,7 @@ def baixar_imagem(url):
     try:
 
         print(
-            "⬇️ BAIXANDO IMAGEM..."
+            "⬇️ Baixando imagem..."
         )
 
         sessao = nova_sessao()
@@ -1171,7 +1368,12 @@ def baixar_imagem(url):
         if not parece_imagem:
 
             print(
-                "❌ URL não retornou uma imagem."
+                "❌ O servidor não retornou uma imagem."
+            )
+
+            print(
+                "📄 Início da resposta:",
+                conteudo[:100]
             )
 
             return None
@@ -1189,6 +1391,84 @@ def baixar_imagem(url):
 
 
 # ============================================================
+# LEGENDA
+# ============================================================
+
+def criar_legenda(produto):
+
+    nome = (
+        produto.get("nome")
+        or "Produto Shopee"
+    )
+
+    preco = produto.get(
+        "preco"
+    )
+
+    preco_antigo = produto.get(
+        "preco_antigo"
+    )
+
+    desconto = produto.get(
+        "desconto"
+    )
+
+    linhas = [
+        "🔥 ACHADINHO DA SHOPEE 🔥",
+        "",
+        f"🛍️ {nome}",
+        ""
+    ]
+
+    # --------------------------------------------------------
+    # PREÇOS
+    # --------------------------------------------------------
+
+    if preco_antigo and preco:
+
+        linhas.append(
+            f"🏷️ De: {preco_antigo}"
+        )
+
+        linhas.append(
+            f"💰 Por: {preco}"
+        )
+
+    elif preco:
+
+        linhas.append(
+            f"💰 Por: {preco}"
+        )
+
+    else:
+
+        linhas.append(
+            "💰 Confira o preço na Shopee"
+        )
+
+    # --------------------------------------------------------
+    # DESCONTO
+    # --------------------------------------------------------
+
+    if desconto:
+
+        linhas.append(
+            f"🔥 {desconto}% OFF"
+        )
+
+    linhas.extend([
+        "",
+        "✅ Vale a pena conferir!",
+        "",
+        "👇 Confira aqui:"
+    ])
+
+    return "\n".join(
+        linhas
+    )
+
+
+# ============================================================
 # PUBLICAR FOTO
 # ============================================================
 
@@ -1198,23 +1478,18 @@ def enviar_foto_produto(
     teclado
 ):
 
-    if not imagem:
-
-        print(
-            "❌ Não existe imagem para enviar."
-        )
-
-        return {
-            "ok": False,
-            "error": "Imagem inexistente."
-        }
-
-    # ========================================================
+    # --------------------------------------------------------
     # 1. FILE_ID TELEGRAM
-    # ========================================================
+    # --------------------------------------------------------
 
-    if not imagem.startswith(
-        ("http://", "https://")
+    if (
+        imagem
+        and not imagem.startswith(
+            (
+                "http://",
+                "https://"
+            )
+        )
     ):
 
         print(
@@ -1232,13 +1507,13 @@ def enviar_foto_produto(
                     ensure_ascii=False
                 )
             },
-            timeout=25
+            timeout=20
         )
 
         if resultado.get("ok"):
 
             print(
-                "✅ FOTO ENVIADA PELO FILE_ID"
+                "✅ FOTO ENVIADA PELO FILE_ID!"
             )
 
             return resultado
@@ -1247,13 +1522,11 @@ def enviar_foto_produto(
             "⚠️ FILE_ID falhou."
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 2. URL DIRETA
-    # ========================================================
+    # --------------------------------------------------------
 
-    if imagem.startswith(
-        ("http://", "https://")
-    ):
+    if imagem:
 
         print(
             "🌐 Tentando URL direta..."
@@ -1276,7 +1549,7 @@ def enviar_foto_produto(
         if resultado.get("ok"):
 
             print(
-                "✅ FOTO ENVIADA PELA URL"
+                "✅ FOTO ENVIADA PELA URL!"
             )
 
             return resultado
@@ -1285,13 +1558,11 @@ def enviar_foto_produto(
             "⚠️ URL direta falhou."
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 3. DOWNLOAD + BYTES
-    # ========================================================
+    # --------------------------------------------------------
 
-    if imagem.startswith(
-        ("http://", "https://")
-    ):
+    if imagem:
 
         conteudo = baixar_imagem(
             imagem
@@ -1299,48 +1570,130 @@ def enviar_foto_produto(
 
         if conteudo:
 
-            print(
-                "📤 Enviando bytes ao Telegram..."
-            )
-
-            arquivos = {
-                "photo": (
-                    "produto.jpg",
-                    conteudo,
-                    "image/jpeg"
-                )
-            }
-
-            resultado = telegram_post(
-                "sendPhoto",
-                data={
-                    "chat_id": CHAT_ID,
-                    "caption": legenda,
-                    "reply_markup": json.dumps(
-                        teclado,
-                        ensure_ascii=False
-                    )
-                },
-                files=arquivos,
-                timeout=35
-            )
-
-            if resultado.get("ok"):
+            try:
 
                 print(
-                    "✅ FOTO ENVIADA PELOS BYTES"
+                    "📤 Enviando bytes para Telegram..."
                 )
 
-                return resultado
+                arquivos = {
+                    "photo": (
+                        "produto.jpg",
+                        conteudo,
+                        "image/jpeg"
+                    )
+                }
 
-            print(
-                "❌ Telegram rejeitou os bytes."
-            )
+                resultado = telegram_post(
+                    "sendPhoto",
+                    data={
+                        "chat_id": CHAT_ID,
+                        "caption": legenda,
+                        "reply_markup": json.dumps(
+                            teclado,
+                            ensure_ascii=False
+                        )
+                    },
+                    files=arquivos,
+                    timeout=35
+                )
+
+                if resultado.get("ok"):
+
+                    print(
+                        "✅ FOTO ENVIADA PELOS BYTES!"
+                    )
+
+                    return resultado
+
+                print(
+                    "❌ Telegram rejeitou os bytes."
+                )
+
+            except Exception as erro:
+
+                print(
+                    "❌ Erro enviando bytes:",
+                    repr(erro)
+                )
 
     return {
         "ok": False,
-        "error": "Todas as tentativas de envio da foto falharam."
+        "error": "Não foi possível enviar a imagem."
     }
+
+
+# ============================================================
+# PUBLICAR TEXTO
+# ============================================================
+
+def enviar_texto_produto(
+    legenda,
+    teclado
+):
+
+    return telegram_post(
+        "sendMessage",
+        data={
+            "chat_id": CHAT_ID,
+            "text": legenda,
+            "reply_markup": json.dumps(
+                teclado,
+                ensure_ascii=False
+            )
+        },
+        timeout=20
+    )
+
+
+# ============================================================
+# TRAVA REDIS
+# ============================================================
+
+def adquirir_trava():
+
+    try:
+
+        valor = (
+            f"{os.getpid()}-{time.time()}"
+        )
+
+        resultado = redis_cmd(
+            "SET",
+            "publicador_lock",
+            valor,
+            "NX",
+            "EX",
+            LOCK_TTL
+        )
+
+        return resultado == "OK"
+
+    except Exception as erro:
+
+        print(
+            "⚠️ Erro na trava Redis:",
+            repr(erro)
+        )
+
+        return False
+
+
+def liberar_trava():
+
+    try:
+
+        redis_cmd(
+            "DEL",
+            "publicador_lock"
+        )
+
+    except Exception as erro:
+
+        print(
+            "⚠️ Erro liberando trava:",
+            repr(erro)
+        )
 
 
 # ============================================================
@@ -1349,84 +1702,116 @@ def enviar_foto_produto(
 
 def publicar_proximo():
 
-    fila = carregar_fila()
-
-    if not fila:
+    if not adquirir_trava():
 
         print(
-            "📭 Fila vazia."
+            "🔒 Outro processo está publicando."
         )
 
         return False
 
-    produto = fila[0]
+    try:
 
-    nome = produto.get(
-        "nome"
-    )
+        fila = carregar_fila()
 
-    link = produto.get(
-        "link"
-    )
+        if not fila:
 
-    imagem = produto.get(
-        "imagem"
-    )
+            print(
+                "📭 Fila vazia."
+            )
 
-    preco = produto.get(
-        "preco"
-    )
+            return False
 
-    tentativas = int(
-        produto.get(
-            "tentativas",
-            0
+        produto = fila[0]
+
+        link = produto.get(
+            "link"
         )
-        or 0
-    )
 
-    print("")
-    print(
-        "======================================"
-    )
-    print(
-        "📤 PUBLICANDO PRODUTO"
-    )
-    print(
-        "🛒",
-        nome or "SEM NOME"
-    )
-    print(
-        "💰",
-        preco or "SEM PREÇO"
-    )
-    print(
-        "🖼️",
-        imagem or "SEM IMAGEM"
-    )
-    print(
-        "🔄 Tentativa:",
-        tentativas + 1
-    )
+        if not link:
 
-    # ========================================================
-    # NÃO PUBLICAR PRODUTO VAZIO
-    # ========================================================
+            print(
+                "❌ Produto sem link. Removendo."
+            )
 
-    if not nome_valido(nome):
+            fila.pop(0)
 
+            salvar_fila(fila)
+
+            return False
+
+        legenda = criar_legenda(
+            produto
+        )
+
+        teclado = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "🛒 COMPRAR AGORA",
+                        "url": link
+                    }
+                ]
+            ]
+        }
+
+        print("")
         print(
-            "❌ Produto sem nome válido."
+            "======================================"
+        )
+        print(
+            "📤 PUBLICANDO PRODUTO"
+        )
+        print(
+            "🛒",
+            produto.get(
+                "nome",
+                "Produto"
+            )
+        )
+        print(
+            "💰",
+            produto.get(
+                "preco"
+            )
+            or "sem preço"
+        )
+        print(
+            "🏷️",
+            produto.get(
+                "preco_antigo"
+            )
+            or "sem preço antigo"
+        )
+        print(
+            "🔥",
+            produto.get(
+                "desconto"
+            )
+            or "sem desconto"
+        )
+        print(
+            "🖼️",
+            produto.get(
+                "imagem"
+            )
+            or "SEM IMAGEM"
+        )
+        print(
+            "======================================"
         )
 
-        produto["tentativas"] = (
-            tentativas + 1
+        # ----------------------------------------------------
+        # TENTA FOTO
+        # ----------------------------------------------------
+
+        resultado_foto = enviar_foto_produto(
+            produto.get("imagem"),
+            legenda,
+            teclado
         )
 
-        fila[0] = produto
-
-        # Depois de 3 tentativas, remove
-        if produto["tentativas"] >= MAX_TENTATIVAS:
+        if resultado_foto.get("ok"):
 
             fila.pop(0)
 
@@ -1434,193 +1819,95 @@ def publicar_proximo():
                 fila
             )
 
-            print(
-                "🗑️ Produto removido após "
-                f"{MAX_TENTATIVAS} tentativas."
+            agora = time.time()
+
+            redis_cmd(
+                "SET",
+                "ultimo_post",
+                str(agora)
             )
 
-        else:
+            print(
+                "✅ PRODUTO PUBLICADO COM FOTO!"
+            )
+
+            print(
+                "📦 Restam:",
+                len(fila)
+            )
+
+            return True
+
+        # ----------------------------------------------------
+        # FOTO FALHOU
+        # PUBLICA TEXTO
+        # ----------------------------------------------------
+
+        print(
+            "⚠️ FOTO FALHOU."
+        )
+
+        print(
+            "➡️ Publicando texto como fallback..."
+        )
+
+        resultado_texto = enviar_texto_produto(
+            legenda,
+            teclado
+        )
+
+        if resultado_texto.get("ok"):
+
+            # IMPORTANTE:
+            # agora o produto é removido mesmo quando
+            # a foto falha, evitando repetição infinita.
+
+            fila.pop(0)
 
             salvar_fila(
                 fila
             )
 
+            agora = time.time()
+
+            redis_cmd(
+                "SET",
+                "ultimo_post",
+                str(agora)
+            )
+
+            print(
+                "⚠️ TEXTO PUBLICADO."
+            )
+
+            print(
+                "📦 Produto removido da fila."
+            )
+
+            print(
+                "⏰ Próxima publicação em 12 minutos."
+            )
+
+            return True
+
+        print(
+            "❌ FOTO E TEXTO FALHARAM."
+        )
+
         return False
-
-    # ========================================================
-    # NÃO PUBLICAR SEM LINK
-    # ========================================================
-
-    if not link or not link.startswith(
-        ("http://", "https://")
-    ):
-
-        print(
-            "❌ Produto sem link válido."
-        )
-
-        fila.pop(0)
-
-        salvar_fila(
-            fila
-        )
-
-        return False
-
-    # ========================================================
-    # LEGENDA
-    # ========================================================
-
-    if preco:
-
-        linha_preco = (
-            f"💰 {preco}"
-        )
-
-    else:
-
-        linha_preco = (
-            "💰 Confira o preço na Shopee"
-        )
-
-    legenda = f"""🔥 ACHADINHO DA SHOPEE 🔥
-
-🛍️ {nome}
-
-{linha_preco}
-
-⚡ Aproveite enquanto estiver disponível!
-
-👇 Clique abaixo para conferir:"""
-
-    teclado = {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "🛒 COMPRAR AGORA",
-                    "url": link
-                }
-            ]
-        ]
-    }
-
-    # ========================================================
-    # FOTO
-    # ========================================================
-
-    resultado = enviar_foto_produto(
-        imagem,
-        legenda,
-        teclado
-    )
-
-    # ========================================================
-    # SUCESSO
-    # ========================================================
-
-    if resultado.get("ok"):
-
-        fila.pop(0)
-
-        salvar_fila(
-            fila
-        )
-
-        print(
-            "✅ PRODUTO PUBLICADO COM FOTO!"
-        )
-
-        print(
-            "📦 Restam:",
-            len(fila)
-        )
-
-        return True
-
-    # ========================================================
-    # FOTO FALHOU
-    # ========================================================
-
-    print(
-        "❌ FOTO NÃO FOI PUBLICADA."
-    )
-
-    produto["tentativas"] = (
-        tentativas + 1
-    )
-
-    fila[0] = produto
-
-    # --------------------------------------------------------
-    # IMPORTANTE:
-    # NÃO PUBLICAR TEXTO AUTOMATICAMENTE
-    # --------------------------------------------------------
-
-    if produto["tentativas"] >= MAX_TENTATIVAS:
-
-        fila.pop(0)
-
-        salvar_fila(
-            fila
-        )
-
-        print(
-            "🗑️ Produto removido após "
-            f"{MAX_TENTATIVAS} falhas."
-        )
-
-    else:
-
-        salvar_fila(
-            fila
-        )
-
-        print(
-            "⏸️ Produto continuará na fila."
-        )
-
-    return False
-
-
-# ============================================================
-# CONTROLE DO INTERVALO
-# ============================================================
-
-def obter_ultimo_post():
-
-    try:
-
-        valor = redis_cmd(
-            "GET",
-            "ultimo_post"
-        )
-
-        if not valor:
-            return 0
-
-        return float(
-            valor
-        )
 
     except Exception as erro:
 
         print(
-            "⚠️ Erro lendo ultimo_post:",
+            "❌ Erro publicando produto:",
             repr(erro)
         )
 
-        return 0
+        return False
 
+    finally:
 
-def registrar_ultima_tentativa():
-
-    redis_cmd(
-        "SET",
-        "ultimo_post",
-        str(
-            time.time()
-        )
-    )
+        liberar_trava()
 
 
 # ============================================================
@@ -1643,52 +1930,30 @@ def publicador_automatico():
 
         try:
 
-            ultimo = obter_ultimo_post()
+            ultimo = float(
+                redis_cmd(
+                    "GET",
+                    "ultimo_post"
+                ) or 0
+            )
 
             agora = time.time()
 
-            tempo_passado = (
-                agora - ultimo
+            restante = (
+                INTERVALO
+                - (agora - ultimo)
             )
 
-            if tempo_passado >= INTERVALO:
-
-                fila = carregar_fila()
-
-                if fila:
-
-                    # ------------------------------------------------
-                    # REGISTRA A TENTATIVA ANTES DE PUBLICAR
-                    # ------------------------------------------------
-                    #
-                    # Isso impede que um erro de foto faça o bot
-                    # disparar novamente em poucos segundos.
-                    #
-                    registrar_ultima_tentativa()
-
-                    publicar_proximo()
-
-                else:
-
-                    print(
-                        "📭 Sem produtos para publicar."
-                    )
-
-                    # Não precisa marcar horário quando
-                    # não há produto.
-
-            else:
-
-                restante = int(
-                    INTERVALO
-                    - tempo_passado
-                )
+            if restante > 0:
 
                 print(
                     f"⏳ Próxima publicação em "
-                    f"{restante // 60}m "
-                    f"{restante % 60}s"
+                    f"{int(restante)} segundos."
                 )
+
+            else:
+
+                publicar_proximo()
 
         except Exception as erro:
 
@@ -1697,12 +1962,11 @@ def publicador_automatico():
                 repr(erro)
             )
 
-            # Mesmo em erro, impede loop agressivo
-            registrar_ultima_tentativa()
+        # Não precisa verificar a cada 30 segundos.
+        # 10 segundos é suficiente para manter o horário
+        # próximo do planejado.
 
-        time.sleep(
-            CICLO
-        )
+        time.sleep(10)
 
 
 # ============================================================
@@ -1733,13 +1997,16 @@ def mostrar_fila(chat_id):
 
         mensagem += (
             f"{numero}. 🛒 "
-            f"{produto.get('nome') or 'SEM NOME'}\n"
+            f"{produto.get('nome', 'Produto')}\n"
             f"💰 "
             f"{produto.get('preco') or 'não encontrado'}\n"
+            f"🏷️ "
+            f"{produto.get('preco_antigo') or 'não encontrado'}\n"
+            f"🔥 "
+            f"{produto.get('desconto') or 'não encontrado'}"
+            f"{'%' if produto.get('desconto') else ''}\n"
             f"🖼️ "
             f"{'SIM' if produto.get('imagem') else 'NÃO'}\n"
-            f"🔄 Tentativas: "
-            f"{produto.get('tentativas', 0)}\n"
             f"🔗 "
             f"{produto.get('link', '')}\n\n"
         )
@@ -1783,10 +2050,12 @@ def processar_link_background(
     nome = nome_informado
     imagem = imagem_telegram
     preco = None
+    preco_antigo = None
+    desconto = None
 
-    # ========================================================
-    # FOTO DO TELEGRAM
-    # ========================================================
+    # --------------------------------------------------------
+    # FOTO ENVIADA PELO USUÁRIO
+    # --------------------------------------------------------
 
     if imagem_telegram:
 
@@ -1794,81 +2063,67 @@ def processar_link_background(
             "🖼️ FOTO DO TELEGRAM RECEBIDA."
         )
 
-        print(
-            "📌 File ID:",
-            imagem_telegram
-        )
-
-    # ========================================================
-    # LEITURA SHOPEE
-    # ========================================================
+    # --------------------------------------------------------
+    # SHOPEE
+    # --------------------------------------------------------
 
     (
         nome_shopee,
-        preco,
+        preco_shopee,
+        antigo_shopee,
+        desconto_shopee,
         imagem_shopee
     ) = extrair_dados_shopee(
         link
     )
 
-    # ========================================================
-    # NOME
-    # ========================================================
-
     if nome_shopee:
 
         nome = nome_shopee
 
-    # ========================================================
-    # IMAGEM
-    #
-    # FOTO ENVIADA PELO USUÁRIO TEM PRIORIDADE
-    # ========================================================
+    if preco_shopee:
 
+        preco = preco_shopee
+
+    if antigo_shopee:
+
+        preco_antigo = antigo_shopee
+
+    if desconto_shopee:
+
+        desconto = desconto_shopee
+
+    # --------------------------------------------------------
+    # IMAGEM
+    # --------------------------------------------------------
+
+    # Foto enviada pelo usuário tem prioridade
     if not imagem:
 
         imagem = imagem_shopee
 
-    # ========================================================
-    # VALIDAÇÃO
-    # ========================================================
+    # --------------------------------------------------------
+    # RECALCULAR DESCONTO
+    # --------------------------------------------------------
 
-    if not nome_valido(nome):
+    if not desconto:
 
-        print(
-            "⚠️ Nome não encontrado."
+        desconto = calcular_desconto(
+            preco,
+            preco_antigo
         )
 
-        # Se foi enviada foto, ainda podemos usar
-        # o nome informado pelo usuário.
-        if not nome_informado:
-
-            enviar_mensagem(
-                chat_id,
-                """⚠️ Não consegui identificar o nome do produto na Shopee.
-
-Envie novamente no formato:
-
-Nome do produto
-Link da Shopee
-
-Ou envie uma FOTO com a legenda:
-
-Nome do produto
-Link da Shopee"""
-            )
-
-            return
-
-    # ========================================================
-    # ADICIONAR NA FILA
-    # ========================================================
+    # --------------------------------------------------------
+    # SALVAR
+    # --------------------------------------------------------
 
     adicionado, posicao = adicionar_na_fila(
-        nome,
+        nome or "Produto Shopee",
         link,
         imagem,
-        preco
+        preco,
+        preco_antigo,
+        desconto
     )
 
     if not adicionado:
@@ -1880,19 +2135,25 @@ Link da Shopee"""
 
         return
 
-    enviar_mensagem(
-        chat_id,
-        f"""✅ PRODUTO ADICIONADO!
+    mensagem = f"""✅ PRODUTO ADICIONADO!
 
-🛍️ {nome}
+🛍️ {nome or 'Produto Shopee'}
 
 💰 Preço: {preco or 'não encontrado'}
 
-🖼️ Imagem: {'SIM ✅' if imagem else 'NÃO ⚠️'}
+🏷️ De: {preco_antigo or 'não encontrado'}
 
-📦 Posição na fila: {posicao}
+🔥 Desconto: {str(desconto) + '%' if desconto else 'não encontrado'}
 
-⏰ Publicação: a cada 12 minutos."""
+🖼️ Imagem: {'encontrada ✅' if imagem else 'não encontrada ⚠️'}
+
+📦 Posição: {posicao}
+
+⏰ Publicação automática a cada 12 minutos."""
+
+    enviar_mensagem(
+        chat_id,
+        mensagem
     )
 
 
@@ -1904,9 +2165,9 @@ def processar_mensagem(mensagem):
 
     chat_id = mensagem["chat"]["id"]
 
-    # ========================================================
+    # --------------------------------------------------------
     # ADMIN
-    # ========================================================
+    # --------------------------------------------------------
 
     if ADMIN_ID:
 
@@ -1920,9 +2181,9 @@ def processar_mensagem(mensagem):
 
             return
 
-    # ========================================================
+    # --------------------------------------------------------
     # FOTO + LEGENDA
-    # ========================================================
+    # --------------------------------------------------------
 
     if "photo" in mensagem:
 
@@ -1944,9 +2205,7 @@ def processar_mensagem(mensagem):
                 chat_id,
                 """❌ FORMATO INCORRETO
 
-Envie:
-
-FOTO
+Envie a FOTO com:
 
 Nome do produto
 Link da Shopee"""
@@ -1958,7 +2217,7 @@ Link da Shopee"""
         link = linhas[1]
 
         if not link.startswith(
-            ("http://", "https://")
+            "http"
         ):
 
             enviar_mensagem(
@@ -1968,9 +2227,9 @@ Link da Shopee"""
 
             return
 
-        # ====================================================
-        # FILE_ID
-        # ====================================================
+        # ----------------------------------------------------
+        # FILE ID
+        # ----------------------------------------------------
 
         file_id = (
             mensagem["photo"][-1]["file_id"]
@@ -1999,9 +2258,9 @@ Link da Shopee"""
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # TEXTO
-    # ========================================================
+    # --------------------------------------------------------
 
     texto = (
         mensagem
@@ -2009,9 +2268,9 @@ Link da Shopee"""
         .strip()
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # START
-    # ========================================================
+    # --------------------------------------------------------
 
     if texto == "/start":
 
@@ -2021,27 +2280,29 @@ Link da Shopee"""
 
 📸 ADICIONAR PRODUTO
 
-Você pode enviar:
+Envie:
 
-1️⃣ FOTO + legenda
+📷 FOTO + legenda
 
 Nome do produto
 Link da Shopee
 
-OU
+OU simplesmente:
 
-2️⃣ Somente o link
+🔗 Link da Shopee
 
-🔎 O bot tenta encontrar:
+O sistema tenta encontrar:
 
 🛍️ Nome
 💰 Preço
+🏷️ Preço anterior
+🔥 Desconto
 🖼️ Imagem
 
 COMANDOS:
 
 /fila
-📦 Ver produtos na fila
+📦 Ver fila
 
 /limparfila
 🗑️ Limpar fila"""
@@ -2049,9 +2310,9 @@ COMANDOS:
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # FILA
-    # ========================================================
+    # --------------------------------------------------------
 
     if texto == "/fila":
 
@@ -2061,9 +2322,9 @@ COMANDOS:
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # LIMPAR
-    # ========================================================
+    # --------------------------------------------------------
 
     if texto == "/limparfila":
 
@@ -2073,12 +2334,12 @@ COMANDOS:
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # SOMENTE LINK
-    # ========================================================
+    # --------------------------------------------------------
 
     if texto.startswith(
-        ("http://", "https://")
+        "http"
     ):
 
         link = texto.split()[0]
@@ -2106,9 +2367,9 @@ COMANDOS:
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # NOME + LINK
-    # ========================================================
+    # --------------------------------------------------------
 
     linhas = [
         linha.strip()
@@ -2140,7 +2401,7 @@ Link da Shopee"""
     link = linhas[1]
 
     if not link.startswith(
-        ("http://", "https://")
+        "http"
     ):
 
         enviar_mensagem(
@@ -2184,7 +2445,7 @@ def iniciar_bot():
         try:
 
             url = (
-                "https://api.telegram.org/"
+                f"https://api.telegram.org/"
                 f"bot{TOKEN}/getUpdates"
             )
 
@@ -2219,7 +2480,7 @@ def iniciar_bot():
 
                     print("")
                     print(
-                        "🚨 TOKEN TELEGRAM INVÁLIDO!"
+                        "🚨 TELEGRAM TOKEN INVÁLIDO!"
                     )
                     print(
                         "Verifique TELEGRAM_TOKEN no Render."
@@ -2348,9 +2609,9 @@ def servidor_saude():
 
 if __name__ == "__main__":
 
-    # ========================================================
-    # TOKEN
-    # ========================================================
+    # --------------------------------------------------------
+    # TESTAR TOKEN
+    # --------------------------------------------------------
 
     if not testar_token():
 
@@ -2367,23 +2628,27 @@ if __name__ == "__main__":
 
             time.sleep(60)
 
-    # ========================================================
+    # --------------------------------------------------------
     # SERVIDOR
-    # ========================================================
+    # --------------------------------------------------------
 
     threading.Thread(
         target=servidor_saude,
         daemon=True
     ).start()
 
-    # ========================================================
+    # --------------------------------------------------------
     # PUBLICADOR
-    # ========================================================
+    # --------------------------------------------------------
 
     threading.Thread(
         target=publicador_automatico,
         daemon=True
     ).start()
+
+    # --------------------------------------------------------
+    # INÍCIO
+    # --------------------------------------------------------
 
     print("")
     print(
@@ -2393,22 +2658,25 @@ if __name__ == "__main__":
         "✅ ACHADOS DA SHOPEE ONLINE"
     )
     print(
-        "⚡ MODO ROBUSTO ATIVO"
+        "🖼️ IMAGEM + DADOS DO PRODUTO"
     )
     print(
-        "🖼️ FOTO TELEGRAM + SHOPEE"
+        "💰 PREÇO ATUAL"
     )
     print(
-        "🛡️ PROTEÇÃO CONTRA POSTAGEM VAZIA"
+        "🏷️ PREÇO ANTERIOR"
+    )
+    print(
+        "🔥 DESCONTO"
+    )
+    print(
+        "🛒 BOTÃO COMPRAR AGORA"
     )
     print(
         "⏰ 5 PRODUTOS POR HORA"
     )
     print(
-        "⏱️ 1 PRODUTO A CADA 12 MINUTOS"
-    )
-    print(
-        "🧵 PROCESSAMENTO EM SEGUNDO PLANO"
+        "🔒 TRAVA CONTRA DUPLA PUBLICAÇÃO"
     )
     print(
         "======================================"
