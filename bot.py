@@ -94,7 +94,7 @@ def salvar_fila(fila):
     )
 
 
-def adicionar_na_fila(nome, link, imagem=None):
+def adicionar_na_fila(nome, link, imagem=None, preco=None):
 
     fila = carregar_fila()
 
@@ -107,6 +107,7 @@ def adicionar_na_fila(nome, link, imagem=None):
         "nome": nome,
         "link": link,
         "imagem": imagem,
+        "preco": preco,
         "link_resolvido": None
     })
 
@@ -679,6 +680,14 @@ def extrair_nome(html_text, url):
 
     for nome in candidatos:
 
+        # Remove o sufixo "| Shopee Brasil" de títulos reais
+        nome = re.sub(
+            r"\s*[|\-–—]\s*shopee(\s+brasil)?\s*$",
+            "",
+            nome,
+            flags=re.IGNORECASE
+        ).strip()
+
         nome_lower = nome.lower()
 
         if any(invalido in nome_lower for invalido in nomes_invalidos):
@@ -925,6 +934,62 @@ def texto_preco(preco):
 
 
 # ============================================================
+# PREÇO DA MENSAGEM (NOVO)
+# ============================================================
+
+def extrair_preco_mensagem(texto):
+    """
+    Lê o preço que o usuário escreveu na legenda/mensagem.
+    Aceita: "R$ 49,90", "R$49.90", "R$ 1.299,00",
+    "de R$ 100 por R$ 50" (usa o valor depois de 'por')
+    e faixas como "R$ 10,00 - R$ 20,00".
+    """
+
+    if not texto:
+        return None
+
+    texto = html.unescape(texto)
+
+    faixa = extrair_faixa_preco(texto)
+
+    if faixa:
+        return {
+            "tipo": "faixa",
+            "menor": faixa["menor"],
+            "maior": faixa["maior"]
+        }
+
+    numero = (
+        r"([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{1,2})?"
+        r"|[0-9]+(?:[.,][0-9]{1,2})?)"
+    )
+
+    for padrao in (rf"por\s*R\$\s*{numero}", rf"R\$\s*{numero}"):
+
+        encontrado = re.search(padrao, texto, re.IGNORECASE)
+
+        if not encontrado:
+            continue
+
+        valor = encontrado.group(1)
+
+        # "1.299" (sem vírgula) = mil duzentos e noventa e nove
+        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", valor):
+            valor = valor.replace(".", "")
+
+        preco = converter_preco(valor)
+
+        if preco:
+            return {
+                "tipo": "unico",
+                "menor": preco,
+                "maior": preco
+            }
+
+    return None
+
+
+# ============================================================
 # PUBLICAR
 # ============================================================
 
@@ -966,7 +1031,8 @@ def publicar_proximo():
 
     nome = dados.get("nome") or nome_original
 
-    preco = dados.get("preco")
+    # Preço escrito por você na legenda tem prioridade
+    preco = produto.get("preco") or dados.get("preco")
 
     imagem_shopee = dados.get("imagem")
 
@@ -987,8 +1053,29 @@ def publicar_proximo():
     if bloqueada:
         print("⚠️ Shopee bloqueou a consulta (login/captcha).")
 
-    if not imagem and imagem_shopee and not bloqueada:
-        imagem = imagem_shopee
+    # Quando a Shopee devolve a página genérica (sem dados do
+    # produto), a imagem dela é só o logo. Só aceitamos a imagem
+    # se o nome do produto foi encontrado E a URL parece ser de
+    # foto de produto.
+    pagina_generica = not dados.get("nome")
+
+    imagem_parece_produto = bool(imagem_shopee) and (
+        "susercontent.com" in imagem_shopee.lower()
+        or "/file/" in imagem_shopee.lower()
+    )
+
+    if not imagem and imagem_shopee:
+
+        if bloqueada or pagina_generica or not imagem_parece_produto:
+
+            print(
+                "⚠️ Imagem da Shopee descartada "
+                "(página genérica ou logo)."
+            )
+
+        else:
+
+            imagem = imagem_shopee
 
     # --------------------------------------------------------
     # LINK DO BOTÃO
@@ -1306,11 +1393,19 @@ na legenda."""
 
         nome = encontrar_nome_mensagem(legenda)
 
+        preco_msg = extrair_preco_mensagem(legenda)
+
         adicionado, posicao = adicionar_na_fila(
             nome,
             link,
-            file_id
+            file_id,
+            preco_msg
         )
+
+        if preco_msg:
+            linha_preco = texto_preco(preco_msg) + " (da legenda)"
+        else:
+            linha_preco = "💰 Preço será consultado na Shopee."
 
         if not adicionado:
 
@@ -1327,7 +1422,7 @@ na legenda."""
 📦 Posição na fila: {posicao}
 
 🔗 Link encontrado.
-💰 Preço será consultado na Shopee.
+{linha_preco}
 🖼️ Sua foto será usada na publicação.
 ⏰ Publicação automática ativa."""
         )
@@ -1361,6 +1456,8 @@ O bot procura automaticamente:
 
 Dica: envie a FOTO do produto com o link
 na legenda para garantir a imagem certa.
+Se quiser o preço certo, escreva na legenda,
+ex.: R$ 49,90
 
 Comandos:
 
@@ -1421,7 +1518,19 @@ ou envie somente o link da Shopee."""
     # ADICIONAR
     # --------------------------------------------------------
 
-    adicionado, posicao = adicionar_na_fila(nome, link)
+    preco_msg = extrair_preco_mensagem(texto)
+
+    adicionado, posicao = adicionar_na_fila(
+        nome,
+        link,
+        None,
+        preco_msg
+    )
+
+    if preco_msg:
+        linha_preco = texto_preco(preco_msg) + " (da mensagem)"
+    else:
+        linha_preco = "💰 Preço será consultado na Shopee."
 
     if not adicionado:
 
@@ -1438,7 +1547,7 @@ ou envie somente o link da Shopee."""
 📦 Posição na fila: {posicao}
 
 🔗 Link encontrado.
-💰 Preço será consultado na Shopee.
+{linha_preco}
 🖼️ Imagem será consultada na Shopee.
 ⏰ Será publicado automaticamente."""
     )
