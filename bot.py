@@ -5,7 +5,7 @@ import time
 import threading
 import re
 import html
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -31,7 +31,6 @@ ADMIN_ID = os.environ.get(
 )
 
 # 5 produtos por hora
-# 3600 / 5 = 720 segundos
 INTERVALO = 720
 
 
@@ -76,22 +75,16 @@ def redis_cmd(*args):
 
     resposta = requests.post(
         REDIS_URL,
-
         headers={
-            "Authorization":
-            f"Bearer {REDIS_TOKEN}"
+            "Authorization": f"Bearer {REDIS_TOKEN}"
         },
-
         json=list(args),
-
         timeout=15
     )
 
     resposta.raise_for_status()
 
-    return resposta.json().get(
-        "result"
-    )
+    return resposta.json().get("result")
 
 
 def carregar_fila():
@@ -138,6 +131,7 @@ def adicionar_na_fila(
 
     fila = carregar_fila()
 
+    # Verifica duplicidade pelo link
     for produto in fila:
 
         if produto.get("link") == link:
@@ -145,9 +139,15 @@ def adicionar_na_fila(
             return False, len(fila)
 
     fila.append({
+
         "nome": nome,
+
         "link": link,
-        "imagem": imagem
+
+        "imagem": imagem,
+
+        "link_resolvido": None
+
     })
 
     salvar_fila(fila)
@@ -166,7 +166,7 @@ def telegram_post(
 ):
 
     url = (
-        f"https://api.telegram.org/"
+        "https://api.telegram.org/"
         f"bot{TOKEN}/{metodo}"
     )
 
@@ -210,7 +210,6 @@ def enviar_mensagem(
 
     return telegram_post(
         "sendMessage",
-
         {
             "chat_id": chat_id,
             "text": texto
@@ -219,36 +218,209 @@ def enviar_mensagem(
 
 
 # ============================================================
+# NORMALIZAR LINK
+# ============================================================
+
+def normalizar_link(link):
+
+    if not link:
+        return None
+
+    try:
+
+        # Remove HTML
+        link = html.unescape(
+            str(link)
+        )
+
+        # Remove espaços
+        link = link.strip()
+
+        # Remove caracteres invisíveis
+        link = re.sub(
+            r"[\u200b-\u200f\u202a-\u202e\ufeff]",
+            "",
+            link
+        )
+
+        # Se veio sem https
+        if link.startswith(
+            "www.shopee.com.br"
+        ):
+
+            link = "https://" + link
+
+        elif link.startswith(
+            "s.shopee.com.br"
+        ):
+
+            link = "https://" + link
+
+        elif link.startswith(
+            "shopee.com.br"
+        ):
+
+            link = "https://" + link
+
+        # Só aceita http/https
+        if not re.match(
+            r"^https?://",
+            link,
+            re.IGNORECASE
+        ):
+
+            return None
+
+        # Remove pontuação que pode vir junto
+        link = link.rstrip(
+            ".,;:!?)]}>\"'"
+        )
+
+        partes = urlsplit(link)
+
+        if not partes.netloc:
+
+            return None
+
+        # Normaliza o domínio
+        dominio = partes.netloc.lower()
+
+        if dominio.startswith("www."):
+            dominio_sem_www = dominio[4:]
+        else:
+            dominio_sem_www = dominio
+
+        # Aceita somente domínios Shopee
+        dominios_validos = [
+
+            "shopee.com.br",
+
+            "s.shopee.com.br",
+
+            "shopee.com",
+
+            "s.shopee.com"
+
+        ]
+
+        if dominio_sem_www not in dominios_validos:
+
+            print(
+                "⚠️ Domínio não reconhecido:",
+                dominio
+            )
+
+            return None
+
+        # Reconstrói a URL
+        link = urlunsplit(
+            (
+                "https",
+                dominio,
+                partes.path,
+                partes.query,
+                ""
+            )
+        )
+
+        return link
+
+    except Exception as erro:
+
+        print(
+            "❌ Erro ao normalizar link:",
+            erro
+        )
+
+        return None
+
+
+# ============================================================
+# ENCONTRAR LINK
+# ============================================================
+
+def encontrar_link(texto):
+
+    if not texto:
+        return None
+
+    # Aceita links normais e links Shopee
+    encontrados = re.findall(
+        r'https?://[^\s<>"\']+',
+        texto,
+        re.IGNORECASE
+    )
+
+    if not encontrados:
+        return None
+
+    for encontrado in encontrados:
+
+        link = normalizar_link(
+            encontrado
+        )
+
+        if link:
+
+            print(
+                "🔗 Link normalizado:",
+                link
+            )
+
+            return link
+
+    return None
+
+
+# ============================================================
 # RESOLVER LINK
 # ============================================================
 
 def resolver_link(link):
 
-    if not link:
-        return link
+    link_original = normalizar_link(
+        link
+    )
+
+    if not link_original:
+
+        return None
 
     try:
 
         print(
-            "🔗 Link recebido:",
-            link
+            "🔗 Link original:",
+            link_original
         )
 
         resposta = requests.get(
-            link,
+            link_original,
             headers=HEADERS,
             allow_redirects=True,
             timeout=20
         )
 
-        final = resposta.url
-
-        print(
-            "🔗 Link resolvido:",
-            final
+        final = normalizar_link(
+            resposta.url
         )
 
-        return final
+        if final:
+
+            print(
+                "🔗 Link resolvido:",
+                final
+            )
+
+            return final
+
+        # Se não conseguiu validar a URL final,
+        # mantém o link original
+        print(
+            "⚠️ Não foi possível normalizar "
+            "o destino. Mantendo link original."
+        )
+
+        return link_original
 
     except Exception as erro:
 
@@ -257,7 +429,8 @@ def resolver_link(link):
             erro
         )
 
-        return link
+        # Não destrói o link original
+        return link_original
 
 
 # ============================================================
@@ -369,7 +542,6 @@ def converter_preco(valor):
         ""
     )
 
-    # 42,94
     if "," in valor:
 
         valor = valor.replace(
@@ -393,7 +565,7 @@ def converter_preco(valor):
     if numero <= 0:
         return None
 
-    # Proteção para valores em centavos
+    # Valores em centavos
     if numero >= 100000:
 
         numero = numero / 100
@@ -426,7 +598,6 @@ def formatar_preco(numero):
 def extrair_precos(texto):
 
     if not texto:
-
         return []
 
     texto = html.unescape(
@@ -434,11 +605,6 @@ def extrair_precos(texto):
     )
 
     precos = []
-
-    # --------------------------------------------------------
-    # R$ 42,94
-    # R$42,94
-    # --------------------------------------------------------
 
     padroes = [
 
@@ -473,21 +639,22 @@ def extrair_precos(texto):
                     numero
                 )
 
-    # --------------------------------------------------------
-    # JSON:
-    # "price": 42.94
-    # "salePrice": 42.94
-    # "currentPrice": 42.94
-    # --------------------------------------------------------
-
     campos = [
+
         "price",
+
         "salePrice",
+
         "currentPrice",
+
         "priceMin",
+
         "priceMax",
+
         "discountPrice",
+
         "finalPrice"
+
     ]
 
     for campo in campos:
@@ -496,7 +663,8 @@ def extrair_precos(texto):
 
             rf'"{campo}"\s*:\s*"([^"]+)"',
 
-            rf'"{campo}"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+            rf'"{campo}"\s*:\s*'
+            rf'([0-9]+(?:\.[0-9]+)?)',
 
         ]
 
@@ -520,18 +688,12 @@ def extrair_precos(texto):
                         numero
                     )
 
-    # --------------------------------------------------------
-    # Remove duplicados
-    # --------------------------------------------------------
-
-    precos = sorted(
+    return sorted(
         set(
             round(p, 2)
             for p in precos
         )
     )
-
-    return precos
 
 
 # ============================================================
@@ -550,10 +712,12 @@ def extrair_faixa_preco(texto):
     padroes = [
 
         r"R\$\s*"
-        r"([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})"
+        r"([0-9]{1,3}"
+        r"(?:\.[0-9]{3})*,[0-9]{2})"
         r"\s*[-–—]\s*"
         r"R\$\s*"
-        r"([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
+        r"([0-9]{1,3}"
+        r"(?:\.[0-9]{3})*,[0-9]{2})",
 
         r"R\$\s*"
         r"([0-9]+(?:[.,][0-9]{2})?)"
@@ -583,19 +747,9 @@ def extrair_faixa_preco(texto):
 
             if p1 and p2:
 
-                menor = min(
-                    p1,
-                    p2
-                )
-
-                maior = max(
-                    p1,
-                    p2
-                )
-
                 return {
-                    "menor": menor,
-                    "maior": maior
+                    "menor": min(p1, p2),
+                    "maior": max(p1, p2)
                 }
 
     return None
@@ -614,10 +768,6 @@ def extrair_nome(
         return None
 
     candidatos = []
-
-    # --------------------------------------------------------
-    # OG TITLE
-    # --------------------------------------------------------
 
     padroes = [
 
@@ -655,10 +805,6 @@ def extrair_nome(
                     nome
                 )
 
-    # --------------------------------------------------------
-    # TITLE
-    # --------------------------------------------------------
-
     encontrado = re.search(
         r"<title[^>]*>(.*?)</title>",
         html_text,
@@ -678,10 +824,6 @@ def extrair_nome(
                 nome
             )
 
-    # --------------------------------------------------------
-    # JSON-LD
-    # --------------------------------------------------------
-
     blocos = re.findall(
         r'<script[^>]+type=["\']'
         r'application/ld\+json'
@@ -700,9 +842,7 @@ def extrair_nome(
         try:
 
             dados = json.loads(
-                html.unescape(
-                    bloco
-                )
+                html.unescape(bloco)
             )
 
             objetos = []
@@ -719,9 +859,7 @@ def extrair_nome(
                 dict
             ):
 
-                objetos = [
-                    dados
-                ]
+                objetos = [dados]
 
             for objeto in objetos:
 
@@ -729,6 +867,7 @@ def extrair_nome(
                     objeto,
                     dict
                 ):
+
                     continue
 
                 nome = objeto.get(
@@ -749,10 +888,6 @@ def extrair_nome(
 
         except Exception:
             pass
-
-    # --------------------------------------------------------
-    # ESCOLHER MELHOR NOME
-    # --------------------------------------------------------
 
     nomes_invalidos = [
 
@@ -782,10 +917,11 @@ def extrair_nome(
             invalido in nome_lower
             for invalido in nomes_invalidos
         ):
+
             continue
 
-        # Evita nomes muito genéricos
         if len(nome.split()) < 3:
+
             continue
 
         candidatos_filtrados.append(
@@ -794,7 +930,6 @@ def extrair_nome(
 
     if candidatos_filtrados:
 
-        # Preferir o candidato mais específico
         melhor = max(
             candidatos_filtrados,
             key=len
@@ -827,10 +962,6 @@ def extrair_imagem(
         return None
 
     imagens = []
-
-    # --------------------------------------------------------
-    # OG IMAGE
-    # --------------------------------------------------------
 
     padroes = [
 
@@ -890,16 +1021,10 @@ def extrair_imagem(
                     imagem
                 )
 
-    # --------------------------------------------------------
-    # SUSERCONTENT
-    # --------------------------------------------------------
-
     encontrados = re.findall(
         r'https?://[^"\']*'
         r'susercontent\.com[^"\']*',
-
         html_text,
-
         re.IGNORECASE
     )
 
@@ -927,17 +1052,20 @@ def extrair_imagem(
                 imagem
             )
 
-    # --------------------------------------------------------
-    # FILTROS
-    # --------------------------------------------------------
-
     ignorar = [
+
         "logo",
+
         "avatar",
+
         "favicon",
+
         "placeholder",
+
         "icon",
+
         "sprite"
+
     ]
 
     finais = []
@@ -950,6 +1078,7 @@ def extrair_imagem(
             palavra in baixa
             for palavra in ignorar
         ):
+
             continue
 
         if imagem not in finais:
@@ -974,7 +1103,7 @@ def extrair_imagem(
 
 
 # ============================================================
-# CONSULTAR PRODUTO SHOPEE
+# CONSULTAR SHOPEE
 # ============================================================
 
 def consultar_shopee(link):
@@ -987,19 +1116,48 @@ def consultar_shopee(link):
 
         "imagem": None,
 
-        "link": link
+        "link": link,
+
+        "link_resolvido": link
+
     }
 
     # --------------------------------------------------------
-    # RESOLVE LINK
+    # LINK NORMALIZADO
     # --------------------------------------------------------
 
-    link_final = resolver_link(
+    link_original = normalizar_link(
         link
     )
 
+    if not link_original:
+
+        print(
+            "❌ Link Shopee inválido."
+        )
+
+        return resultado
+
+    resultado["link"] = (
+        link_original
+    )
+
     # --------------------------------------------------------
-    # BAIXA PÁGINA
+    # RESOLVER
+    # --------------------------------------------------------
+
+    link_final = resolver_link(
+        link_original
+    )
+
+    if link_final:
+
+        resultado[
+            "link_resolvido"
+        ] = link_final
+
+    # --------------------------------------------------------
+    # BAIXAR
     # --------------------------------------------------------
 
     html_text, url_real = (
@@ -1038,7 +1196,6 @@ def consultar_shopee(link):
     # PREÇO
     # --------------------------------------------------------
 
-    # Primeiro tenta faixa
     faixa = extrair_faixa_preco(
         html_text
     )
@@ -1046,6 +1203,7 @@ def consultar_shopee(link):
     if faixa:
 
         resultado["preco"] = {
+
             "tipo": "faixa",
 
             "menor":
@@ -1053,6 +1211,7 @@ def consultar_shopee(link):
 
             "maior":
                 faixa["maior"]
+
         }
 
         print(
@@ -1079,11 +1238,13 @@ def consultar_shopee(link):
             )
 
             resultado["preco"] = {
+
                 "tipo": "unico",
 
                 "menor": menor,
 
                 "maior": menor
+
             }
 
             print(
@@ -1112,8 +1273,13 @@ def consultar_shopee(link):
     )
 
     print(
-        "🔗 URL:",
-        url_real
+        "🔗 Link original:",
+        resultado["link"]
+    )
+
+    print(
+        "🔗 Link resolvido:",
+        resultado["link_resolvido"]
     )
 
     print(
@@ -1124,7 +1290,7 @@ def consultar_shopee(link):
 
 
 # ============================================================
-# MONTAR PREÇO DA PUBLICAÇÃO
+# PREÇO
 # ============================================================
 
 def texto_preco(preco):
@@ -1135,7 +1301,9 @@ def texto_preco(preco):
             "💰 OFERTA ESPECIAL"
         )
 
-    if preco.get("tipo") == "faixa":
+    if preco.get(
+        "tipo"
+    ) == "faixa":
 
         menor = formatar_preco(
             preco["menor"]
@@ -1155,7 +1323,7 @@ def texto_preco(preco):
 
 
 # ============================================================
-# PUBLICAR PRODUTO
+# PUBLICAR
 # ============================================================
 
 def publicar_proximo():
@@ -1172,17 +1340,31 @@ def publicar_proximo():
 
     produto = fila[0]
 
-    nome_original = produto.get(
-        "nome"
-    ) or "Achadinho da Shopee"
+    nome_original = (
+        produto.get("nome")
+        or
+        "Achadinho da Shopee"
+    )
 
-    link = produto.get(
-        "link"
+    link = normalizar_link(
+        produto.get("link")
     )
 
     imagem = produto.get(
         "imagem"
     )
+
+    if not link:
+
+        print(
+            "❌ Produto possui link inválido."
+        )
+
+        print(
+            "⚠️ Produto continua na fila."
+        )
+
+        return False
 
     # --------------------------------------------------------
     # CONSULTA SHOPEE
@@ -1194,7 +1376,8 @@ def publicar_proximo():
 
     nome = (
         dados.get("nome")
-        or nome_original
+        or
+        nome_original
     )
 
     preco = dados.get(
@@ -1205,9 +1388,37 @@ def publicar_proximo():
         "imagem"
     )
 
+    # Usa imagem encontrada na Shopee
     if imagem_shopee:
 
         imagem = imagem_shopee
+
+    # --------------------------------------------------------
+    # LINK DO BOTÃO
+    # --------------------------------------------------------
+
+    # IMPORTANTE:
+    # O botão usa o link ORIGINAL normalizado.
+    # Não usamos a URL redirecionada como botão,
+    # porque ela pode perder parâmetros de afiliado.
+
+    link_botao = normalizar_link(
+        link
+    )
+
+    if not link_botao:
+
+        print(
+            "❌ Não foi possível preparar "
+            "o link do botão."
+        )
+
+        return False
+
+    print(
+        "🔘 LINK DO BOTÃO:",
+        link_botao
+    )
 
     # --------------------------------------------------------
     # LEGENDA
@@ -1235,16 +1446,19 @@ def publicar_proximo():
             [
 
                 {
+
                     "text":
                     "🛒 COMPRAR AGORA",
 
                     "url":
-                    link
+                    link_botao
+
                 }
 
             ]
 
         ]
+
     }
 
     # ========================================================
@@ -1277,10 +1491,14 @@ def publicar_proximo():
                     teclado,
                     ensure_ascii=False
                 )
+
             }
+
         )
 
-        if resposta.get("ok"):
+        if resposta.get(
+            "ok"
+        ):
 
             fila.pop(0)
 
@@ -1304,6 +1522,11 @@ def publicar_proximo():
             print(
                 "💰",
                 texto_preco(preco)
+            )
+
+            print(
+                "🔗",
+                link_botao
             )
 
             print(
@@ -1350,10 +1573,14 @@ def publicar_proximo():
                 teclado,
                 ensure_ascii=False
             )
+
         }
+
     )
 
-    if resposta.get("ok"):
+    if resposta.get(
+        "ok"
+    ):
 
         fila.pop(0)
 
@@ -1377,6 +1604,11 @@ def publicar_proximo():
         print(
             "💰",
             texto_preco(preco)
+        )
+
+        print(
+            "🔗",
+            link_botao
         )
 
         print(
@@ -1429,13 +1661,17 @@ def publicador_automatico():
                 redis_cmd(
                     "GET",
                     "ultimo_post"
-                ) or 0
+                )
+                or
+                0
             )
 
             if (
                 time.time()
-                - ultimo
-                >= INTERVALO
+                -
+                ultimo
+                >=
+                INTERVALO
             ):
 
                 if publicar_proximo():
@@ -1491,6 +1727,7 @@ def mostrar_fila(chat_id):
 
             f"🔗 "
             f"{produto.get('link', '')}\n\n"
+
         )
 
     enviar_mensagem(
@@ -1514,34 +1751,7 @@ def limpar_fila(chat_id):
 
 
 # ============================================================
-# ENCONTRAR LINK
-# ============================================================
-
-def encontrar_link(texto):
-
-    if not texto:
-        return None
-
-    encontrados = re.findall(
-        r'https?://[^\s<>"\']+',
-        texto
-    )
-
-    if not encontrados:
-
-        return None
-
-    link = encontrados[0].strip()
-
-    link = link.rstrip(
-        ".,;:!?)]}>\"'"
-    )
-
-    return link
-
-
-# ============================================================
-# ENCONTRAR NOME DA MENSAGEM
+# NOME DA MENSAGEM
 # ============================================================
 
 def encontrar_nome_mensagem(
@@ -1561,6 +1771,7 @@ def encontrar_nome_mensagem(
         for linha in texto.splitlines()
 
         if linha.strip()
+
     ]
 
     for linha in linhas:
@@ -1570,6 +1781,7 @@ def encontrar_nome_mensagem(
             linha,
             re.IGNORECASE
         ):
+
             continue
 
         linha_lower = linha.lower()
@@ -1578,18 +1790,21 @@ def encontrar_nome_mensagem(
             "compre na shopee"
             in linha_lower
         ):
+
             continue
 
         if (
             "shopee brasil"
             in linha_lower
         ):
+
             continue
 
         if (
             "procurando a"
             in linha_lower
         ):
+
             continue
 
         if len(linha) >= 10:
@@ -1633,7 +1848,8 @@ def processar_mensagem(
 
         if (
             usuario_id
-            != str(ADMIN_ID)
+            !=
+            str(ADMIN_ID)
         ):
 
             return
@@ -1664,7 +1880,7 @@ def processar_mensagem(
             enviar_mensagem(
                 chat_id,
 
-                """❌ Não encontrei o link da Shopee.
+                """❌ Não encontrei um link válido da Shopee.
 
 Envie a foto com o link da Shopee
 na legenda."""
@@ -1705,9 +1921,9 @@ na legenda."""
 
 📦 Posição na fila: {posicao}
 
-🖼️ Foto salva.
 🔗 Link encontrado.
 💰 Preço será consultado na Shopee.
+🖼️ Imagem será consultada na Shopee.
 ⏰ Publicação automática ativa."""
         )
 
@@ -1767,7 +1983,7 @@ Limpar fila"""
         return
 
     # --------------------------------------------------------
-    # LIMPAR
+    # LIMPAR FILA
     # --------------------------------------------------------
 
     if texto == "/limparfila":
@@ -1779,7 +1995,7 @@ Limpar fila"""
         return
 
     # --------------------------------------------------------
-    # ENCONTRAR LINK
+    # LINK
     # --------------------------------------------------------
 
     link = encontrar_link(
@@ -1792,16 +2008,16 @@ Limpar fila"""
 
             chat_id,
 
-            """❌ Não encontrei um link da Shopee.
+            """❌ Não encontrei um link válido da Shopee.
 
 Cole a mensagem completa do produto
-ou envie somente o link."""
+ou envie somente o link da Shopee."""
         )
 
         return
 
     # --------------------------------------------------------
-    # NOME INICIAL
+    # NOME
     # --------------------------------------------------------
 
     nome = encontrar_nome_mensagem(
@@ -1888,6 +2104,7 @@ def iniciar_bot():
                 params=parametros,
 
                 timeout=35
+
             )
 
             dados = resposta.json()
