@@ -27,6 +27,22 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 # 720 segundos = 12 minutos = 5 produtos por hora
 INTERVALO = 720
 
+CRAWLER_UAS = [
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+    "WhatsApp/2.23.20.0 A",
+    "TelegramBot (like TwitterBot)",
+    "Twitterbot/1.0",
+]
+
+
+def headers_crawler(ua):
+    return {
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+    }
+
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Linux; Android 13; SM-G991B) "
@@ -593,9 +609,18 @@ def resolver_link(link):
 # BAIXAR PÁGINA SHOPEE
 # ============================================================
 
+def _html_tem_produto(texto):
+    if not texto:
+        return False
+    return bool(
+        re.search(r"susercontent\.com/file/[A-Za-z0-9_-]{16,}", texto)
+        or re.search(r'application/ld\+json', texto)
+    )
+
+
 def baixar_pagina(link):
 
-    tentativas = [
+    tentativas = [headers_crawler(ua) for ua in CRAWLER_UAS] + [
         HEADERS,
         {
             **HEADERS,
@@ -608,16 +633,15 @@ def baixar_pagina(link):
         }
     ]
 
-    for numero, headers in enumerate(
-        tentativas,
-        start=1
-    ):
+    reserva = (None, link)
+
+    for numero, headers in enumerate(tentativas, start=1):
 
         try:
 
             print(
-                f"🌐 Tentativa página Shopee {numero}/"
-                f"{len(tentativas)}"
+                f"🌐 Tentativa página Shopee {numero}/{len(tentativas)}",
+                "UA:", headers.get("User-Agent", "")[:30]
             )
 
             resposta = requests.get(
@@ -627,44 +651,30 @@ def baixar_pagina(link):
                 timeout=35
             )
 
-            print(
-                "🌐 Status Shopee:",
-                resposta.status_code
-            )
-
-            print(
-                "📄 HTML recebido:",
-                len(resposta.text),
-                "caracteres"
-            )
-
-            print(
-                "🌐 URL final:",
-                resposta.url
-            )
+            print("🌐 Status Shopee:", resposta.status_code)
+            print("📄 HTML recebido:", len(resposta.text), "caracteres")
+            print("🌐 URL final:", resposta.url)
 
             if resposta.status_code == 200:
 
-                return (
-                    resposta.text,
-                    resposta.url
-                )
+                if _html_tem_produto(resposta.text):
+                    print("✅ HTML com dados de produto")
+                    return resposta.text, resposta.url
 
-            print(
-                "⚠️ Shopee retornou:",
-                resposta.status_code
-            )
+                if reserva[0] is None:
+                    reserva = (resposta.text, resposta.url)
+
+            else:
+                print("⚠️ Shopee retornou:", resposta.status_code)
 
         except Exception as erro:
+            print("⚠️ Erro tentativa:", repr(erro))
 
-            print(
-                "⚠️ Erro tentativa:",
-                repr(erro)
-            )
+    if reserva[0]:
+        print("⚠️ Nenhum HTML trouxe dados de produto; usando o primeiro 200.")
+        return reserva
 
-    print(
-        "❌ Não foi possível baixar a página Shopee."
-    )
+    print("❌ Não foi possível baixar a página Shopee.")
 
     return None, link
 
@@ -1429,12 +1439,25 @@ def extrair_ids(*urls):
 
 
 def resolver_com_historico(link):
-    r = requests.get(
-        link, headers=HEADERS, allow_redirects=True, timeout=30
-    )
-    urls = [h.headers.get("Location", "") for h in r.history]
-    urls += [h.url for h in r.history] + [r.url]
-    return r.url, urls
+    melhor = None
+    for hdr in [headers_crawler(CRAWLER_UAS[0]), HEADERS]:
+        try:
+            r = requests.get(
+                link, headers=hdr, allow_redirects=True, timeout=30
+            )
+        except Exception as erro:
+            print("⚠️ Erro resolvendo:", repr(erro))
+            continue
+        urls = [h.headers.get("Location", "") for h in r.history]
+        urls += [h.url for h in r.history] + [r.url]
+        print("🔗 Redirecionamentos:", [u[:120] for u in urls if u])
+        if extrair_ids(*urls):
+            return r.url, urls
+        if melhor is None:
+            melhor = (r.url, urls)
+    if melhor:
+        return melhor
+    raise RuntimeError("não resolveu o link")
 
 
 def _montar_dados_api(d):
@@ -2470,6 +2493,79 @@ def encontrar_nome_mensagem(texto):
 # PROCESSAR MENSAGEM
 # ============================================================
 
+def diagnosticar_shopee(chat_id, texto):
+
+    link = encontrar_link(texto)
+
+    if not link:
+        enviar_mensagem(
+            chat_id,
+            "Use: /testar https://s.shopee.com.br/xxxx"
+        )
+        return
+
+    linhas = ["DIAGNOSTICO SHOPEE", "Link: " + link[:150]]
+
+    # redirecionamentos
+    try:
+        url_final, historico = resolver_com_historico(link)
+        linhas.append("URL final: " + url_final[:200])
+        ids = extrair_ids(url_final, *historico, link)
+    except Exception as erro:
+        linhas.append("Erro resolvendo: " + repr(erro)[:150])
+        url_final, ids = link, extrair_ids(link)
+
+    linhas.append("IDs (shopid, itemid): " + str(ids))
+
+    # páginas com vários User-Agents
+    agentes = [(ua[:18], headers_crawler(ua)) for ua in CRAWLER_UAS]
+    agentes.append(("Celular", HEADERS))
+
+    for nome_ua, hdr in agentes:
+        try:
+            r = requests.get(
+                url_final, headers=hdr,
+                allow_redirects=True, timeout=25
+            )
+            corpo = r.text or ""
+            tem_foto = bool(re.search(
+                r"susercontent\.com/file/[A-Za-z0-9_-]{16,}", corpo
+            ))
+            tem_og = "og:image" in corpo
+            titulo = re.search(
+                r"<title[^>]*>(.*?)</title>", corpo,
+                re.IGNORECASE | re.DOTALL
+            )
+            linhas.append(
+                f"[{nome_ua}] HTTP {r.status_code} | {len(corpo)} chars"
+                f" | foto produto: {tem_foto} | og:image: {tem_og}"
+                f" | titulo: "
+                + (limpar_texto(titulo.group(1))[:60] if titulo else "-")
+            )
+        except Exception as erro:
+            linhas.append(f"[{nome_ua}] erro: " + repr(erro)[:100])
+
+    # API
+    if ids:
+        shopid, itemid = ids
+        for rota in (
+            f"https://shopee.com.br/api/v4/item/get?itemid={itemid}&shopid={shopid}",
+            f"https://shopee.com.br/api/v4/pdp/get_pc?item_id={itemid}&shop_id={shopid}&tz_offset_minutes=-180&detail_level=0",
+        ):
+            try:
+                r = requests.get(rota, headers=API_HEADERS, timeout=25)
+                linhas.append(
+                    "[API " + rota.split("?")[0][-12:] + "] HTTP "
+                    + str(r.status_code) + " | " + r.text[:130].replace("\n", " ")
+                )
+            except Exception as erro:
+                linhas.append("[API] erro: " + repr(erro)[:100])
+
+    linhas.append("Cookie configurado: " + str(bool(os.environ.get("SHOPEE_COOKIE"))))
+
+    enviar_mensagem(chat_id, "\n".join(linhas)[:3900])
+
+
 def processar_mensagem(mensagem):
 
     chat_id = mensagem[
@@ -2634,6 +2730,15 @@ Limpar fila"""
 
         mostrar_fila(
             chat_id
+        )
+
+        return
+
+    if texto.startswith("/testar"):
+
+        diagnosticar_shopee(
+            chat_id,
+            texto
         )
 
         return
