@@ -27,8 +27,6 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 # 720 segundos = 12 minutos = 5 produtos por hora
 INTERVALO = 720
 
-# A Shopee entrega o HTML completo para estes robôs de pré-visualização.
-# O facebookexternalhit leva 403 e ficou de fora.
 CRAWLER_UAS = [
     "WhatsApp/2.23.20.0 A",
     "TelegramBot (like TwitterBot)",
@@ -615,24 +613,12 @@ def _html_tem_produto(texto):
         return False
     return bool(
         re.search(r"susercontent\.com/file/[A-Za-z0-9_-]{16,}", texto)
-        or re.search(r'application/ld\+json', texto)
     )
 
 
 def baixar_pagina(link):
 
-    tentativas = [headers_crawler(ua) for ua in CRAWLER_UAS] + [
-        HEADERS,
-        {
-            **HEADERS,
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            )
-        }
-    ]
+    tentativas = [headers_crawler(ua) for ua in CRAWLER_UAS] + [HEADERS]
 
     reserva = (None, link)
 
@@ -659,7 +645,7 @@ def baixar_pagina(link):
             if resposta.status_code == 200:
 
                 if _html_tem_produto(resposta.text):
-                    print("✅ HTML com dados de produto")
+                    print("✅ HTML com foto de produto")
                     return resposta.text, resposta.url
 
                 if reserva[0] is None:
@@ -672,13 +658,12 @@ def baixar_pagina(link):
             print("⚠️ Erro tentativa:", repr(erro))
 
     if reserva[0]:
-        print("⚠️ Nenhum HTML trouxe dados de produto; usando o primeiro 200.")
+        print("⚠️ Nenhum HTML trouxe foto; usando o primeiro 200.")
         return reserva
 
     print("❌ Não foi possível baixar a página Shopee.")
 
     return None, link
-
 
 # ============================================================
 # LIMPAR TEXTO
@@ -1000,14 +985,6 @@ def extrair_nome(html_text, url):
         nome = limpar_texto(
             encontrado.group(1)
         )
-
-        # tira o sufixo de SEO: "... | Shopee Brasil"
-        nome = re.sub(
-            r"\s*[|\-–—]\s*shopee(\s+brasil)?\s*$",
-            "",
-            nome,
-            flags=re.IGNORECASE
-        ).strip()
 
         if len(nome) >= 5:
             candidatos.append(nome)
@@ -1387,8 +1364,6 @@ def extrair_imagens(
 
             finais.append(imagem)
 
-    # Só aceita imagens de produto (CDN de arquivos da Shopee).
-    # Descarta banners/logos genéricos da página.
     finais = [
         i for i in finais
         if re.search(
@@ -1443,7 +1418,7 @@ def extrair_ids(*urls):
         ):
             m = re.search(padrao, u)
             if m:
-                return m.group(1), m.group(2)  # shopid, itemid
+                return m.group(1), m.group(2)
     return None
 
 
@@ -1472,6 +1447,33 @@ def resolver_com_historico(link):
     return link, [link]
 
 
+def ids_do_html(html_text):
+    if not html_text:
+        return None
+
+    texto = (
+        html_text
+        .replace("\\/", "/")
+        .replace("\\u002F", "/")
+        .replace("\\u002f", "/")
+    )
+
+    padroes = (
+        r'"shopid"\s*:\s*"?(\d+)"?[^}]{0,40}?"itemid"\s*:\s*"?(\d+)',
+        r'"itemid"\s*:\s*"?(\d+)"?[^}]{0,40}?"shopid"\s*:\s*"?(\d+)',
+    )
+
+    m = re.search(padroes[0], texto)
+    if m:
+        return m.group(1), m.group(2)
+
+    m = re.search(padroes[1], texto)
+    if m:
+        return m.group(2), m.group(1)
+
+    return extrair_ids(texto)
+
+
 def _montar_dados_api(d):
     base = (d.get("price") or 0)
     menor = (d.get("price_min") or base) / 100000
@@ -1490,35 +1492,6 @@ def _montar_dados_api(d):
         "maior": maior,
         "imagens": imagens,
     }
-
-
-def ids_do_html(html_text):
-    if not html_text:
-        return None
-
-    texto = (
-        html_text
-        .replace("\\/", "/")
-        .replace("\\u002F", "/")
-        .replace("\\u002f", "/")
-    )
-
-    campos = (
-        r'"shopid"\s*:\s*"?\d+"?\s*,\s*"itemid"\s*:\s*"?\d+"?',
-        r'"itemid"\s*:\s*"?\d+"?\s*,\s*"shopid"\s*:\s*"?\d+"?',
-    )
-
-    for padrao in campos:
-        m = re.search(padrao, texto)
-        if not m:
-            continue
-        shop = re.search(r'shopid"\s*:\s*"?(\d+)', m.group(0))
-        item = re.search(r'itemid"\s*:\s*"?(\d+)', m.group(0))
-        if shop and item:
-            return shop.group(1), item.group(1)
-
-    # formato apple-touch / canonical: i.SHOPID.ITEMID
-    return extrair_ids(texto)
 
 
 def consultar_api_shopee(shopid, itemid):
@@ -1564,7 +1537,6 @@ def consultar_api_shopee(shopid, itemid):
 
     return None
 
-
 # ============================================================
 # CONSULTAR SHOPEE
 # ============================================================
@@ -1598,13 +1570,14 @@ def consultar_shopee(link):
     # TENTA A API INTERNA PRIMEIRO
     # --------------------------------------------------------
 
+    ids = extrair_ids(link_original)
+
     try:
         url_final, historico = resolver_com_historico(link_original)
         resultado["link_resolvido"] = url_final
-        ids = extrair_ids(url_final, *historico, link_original)
+        ids = extrair_ids(url_final, *historico, link_original) or ids
     except Exception as erro:
-        print("⚠️ Erro resolvendo:", erro)
-        ids = extrair_ids(link_original)
+        print("⚠️ Erro resolvendo:", repr(erro))
 
     print("🆔 IDs (shopid, itemid):", ids)
 
@@ -1634,7 +1607,6 @@ def consultar_shopee(link):
                     break
             print("✅ Dados obtidos pela API:", resultado["nome"])
             return resultado
-
     # Se a API falhar, segue o método antigo (HTML) abaixo.
 
 
@@ -1655,7 +1627,7 @@ def consultar_shopee(link):
         return resultado
 
     # --------------------------------------------------------
-    # ID ACHADO DENTRO DO HTML (links curtos nao expoem na URL)
+    # ID ACHADO DENTRO DO HTML
     # --------------------------------------------------------
 
     if not ids:
@@ -1705,9 +1677,7 @@ def consultar_shopee(link):
         nome_produto = re.sub(
             r"\s+", " ", nome_produto
         ).strip()
-
-        if re.search(r"[A-Za-zÀ-ÿ]$", nome_produto) is None:
-            nome_produto = nome_produto.rstrip(" -–—,;:")
+        nome_produto = nome_produto.rstrip(" -–—,;:")
 
     resultado["nome"] = nome_produto or None
 
@@ -2595,7 +2565,6 @@ def diagnosticar_shopee(chat_id, texto):
 
     linhas = ["DIAGNOSTICO SHOPEE", "Link: " + link[:150]]
 
-    # redirecionamentos
     try:
         url_final, historico = resolver_com_historico(link)
         linhas.append("URL final: " + url_final[:200])
@@ -2604,11 +2573,12 @@ def diagnosticar_shopee(chat_id, texto):
         linhas.append("Erro resolvendo: " + repr(erro)[:150])
         url_final, ids = link, extrair_ids(link)
 
-    linhas.append("IDs (shopid, itemid): " + str(ids))
+    linhas.append("IDs da URL: " + str(ids))
 
-    # páginas com vários User-Agents
     agentes = [(ua[:18], headers_crawler(ua)) for ua in CRAWLER_UAS]
     agentes.append(("Celular", HEADERS))
+
+    primeiro_html = None
 
     for nome_ua, hdr in agentes:
         try:
@@ -2617,24 +2587,28 @@ def diagnosticar_shopee(chat_id, texto):
                 allow_redirects=True, timeout=25
             )
             corpo = r.text or ""
+            if primeiro_html is None and r.status_code == 200:
+                primeiro_html = corpo
             tem_foto = bool(re.search(
-                r"susercontent\.com/file/[A-Za-z0-9_-]{16,}", corpo
+                r"susercontent\\.com/file/[A-Za-z0-9_-]{16,}", corpo
             ))
-            tem_og = "og:image" in corpo
             titulo = re.search(
                 r"<title[^>]*>(.*?)</title>", corpo,
                 re.IGNORECASE | re.DOTALL
             )
             linhas.append(
                 f"[{nome_ua}] HTTP {r.status_code} | {len(corpo)} chars"
-                f" | foto produto: {tem_foto} | og:image: {tem_og}"
+                f" | foto produto: {tem_foto}"
                 f" | titulo: "
                 + (limpar_texto(titulo.group(1))[:60] if titulo else "-")
             )
         except Exception as erro:
             linhas.append(f"[{nome_ua}] erro: " + repr(erro)[:100])
 
-    # API
+    if primeiro_html and not ids:
+        ids = ids_do_html(primeiro_html)
+        linhas.append("IDs achados no HTML: " + str(ids))
+
     if ids:
         shopid, itemid = ids
         for rota in (
@@ -2645,15 +2619,14 @@ def diagnosticar_shopee(chat_id, texto):
                 r = requests.get(rota, headers=API_HEADERS, timeout=25)
                 linhas.append(
                     "[API " + rota.split("?")[0][-12:] + "] HTTP "
-                    + str(r.status_code) + " | " + r.text[:130].replace("\n", " ")
+                    + str(r.status_code) + " | " + r.text[:130].replace(chr(10), " ")
                 )
             except Exception as erro:
                 linhas.append("[API] erro: " + repr(erro)[:100])
 
     linhas.append("Cookie configurado: " + str(bool(os.environ.get("SHOPEE_COOKIE"))))
 
-    enviar_mensagem(chat_id, "\n".join(linhas)[:3900])
-
+    enviar_mensagem(chat_id, chr(10).join(linhas)[:3900])
 
 def processar_mensagem(mensagem):
 
@@ -2823,6 +2796,10 @@ Limpar fila"""
 
         return
 
+    # --------------------------------------------------------
+    # DIAGNOSTICO
+    # --------------------------------------------------------
+
     if texto.startswith("/testar"):
 
         diagnosticar_shopee(
@@ -2864,4 +2841,370 @@ Limpar fila"""
 
     # --------------------------------------------------------
     # PRIMEIRO: NOME DA MENSAGEM
-    # ------------------------------------------------
+    # --------------------------------------------------------
+
+    nome_mensagem = (
+        encontrar_nome_mensagem(
+            texto
+        )
+    )
+
+    preco_msg = (
+        extrair_preco_mensagem(
+            texto
+        )
+    )
+
+    # ========================================================
+    # AGORA CONSULTA A SHOPEE
+    # ========================================================
+
+    print(
+        "================================"
+    )
+
+    print(
+        "🔎 CONSULTANDO SHOPEE NA ENTRADA..."
+    )
+
+    print(
+        "🔗",
+        link
+    )
+
+    dados = consultar_shopee(
+        link
+    )
+
+    # ========================================================
+    # NOME
+    # ========================================================
+
+    nome = (
+        dados.get("nome")
+        or nome_mensagem
+        or "Achadinho da Shopee"
+    )
+
+    # ========================================================
+    # PREÇO
+    # ========================================================
+
+    preco = (
+        preco_msg
+        or dados.get("preco")
+    )
+
+    # ========================================================
+    # IMAGEM
+    # ========================================================
+
+    imagem = dados.get(
+        "imagem"
+    )
+
+    link_resolvido = dados.get(
+        "link_resolvido"
+    )
+
+    # ========================================================
+    # ADICIONAR
+    # ========================================================
+
+    adicionado, posicao = adicionar_na_fila(
+        nome,
+        link,
+        imagem,
+        preco,
+        link_resolvido
+    )
+
+    if not adicionado:
+
+        enviar_mensagem(
+            chat_id,
+            "⚠️ Esse produto já está na fila."
+        )
+
+        return
+
+    # ========================================================
+    # MENSAGEM DE CONFIRMAÇÃO
+    # ========================================================
+
+    if preco_msg:
+
+        linha_preco = (
+            texto_preco(preco_msg)
+            + " (da mensagem)"
+        )
+
+    elif dados.get("preco"):
+
+        linha_preco = (
+            texto_preco(
+                dados.get("preco")
+            )
+            + " (Shopee)"
+        )
+
+    else:
+
+        linha_preco = (
+            "💰 Preço não encontrado."
+        )
+
+    if imagem:
+
+        linha_imagem = (
+            "🖼️ Imagem encontrada e validada."
+        )
+
+    else:
+
+        linha_imagem = (
+            "🖼️ Imagem não encontrada."
+        )
+
+    enviar_mensagem(
+        chat_id,
+        f"""✅ PRODUTO ADICIONADO!
+
+🛍️ {nome}
+
+📦 Posição na fila: {posicao}
+
+🔗 Link encontrado.
+{linha_preco}
+{linha_imagem}
+⏰ Será publicado automaticamente."""
+    )
+
+    print(
+        "================================"
+    )
+
+    print(
+        "✅ PRODUTO SALVO NA FILA"
+    )
+
+    print(
+        "🛍️ NOME:",
+        nome
+    )
+
+    print(
+        "💰 PREÇO:",
+        texto_preco(preco)
+    )
+
+    print(
+        "🖼️ IMAGEM:",
+        imagem
+    )
+
+    print(
+        "================================"
+    )
+
+
+# ============================================================
+# RECEBER TELEGRAM
+# ============================================================
+
+def iniciar_bot():
+
+    print(
+        "📥 Sistema de recebimento iniciado."
+    )
+
+    ultimo_update = None
+
+    while True:
+
+        try:
+
+            url = (
+                f"https://api.telegram.org/"
+                f"bot{TOKEN}/getUpdates"
+            )
+
+            parametros = {
+                "timeout": 30
+            }
+
+            if ultimo_update is not None:
+
+                parametros[
+                    "offset"
+                ] = ultimo_update + 1
+
+            resposta = requests.get(
+                url,
+                params=parametros,
+                timeout=35
+            )
+
+            dados = resposta.json()
+
+            if not dados.get("ok"):
+
+                print(
+                    "❌ Erro Telegram:",
+                    dados
+                )
+
+                time.sleep(5)
+
+                continue
+
+            for update in dados[
+                "result"
+            ]:
+
+                ultimo_update = update[
+                    "update_id"
+                ]
+
+                if "message" in update:
+
+                    try:
+
+                        processar_mensagem(
+                            update["message"]
+                        )
+
+                    except Exception as erro:
+
+                        print(
+                            "❌ Erro ao processar:",
+                            repr(erro)
+                        )
+
+                        try:
+
+                            enviar_mensagem(
+                                update["message"][
+                                    "chat"
+                                ]["id"],
+                                "⚠️ Erro temporário. Tente enviar novamente."
+                            )
+
+                        except Exception:
+                            pass
+
+        except Exception as erro:
+
+            print(
+                "❌ Erro:",
+                repr(erro)
+            )
+
+            time.sleep(5)
+
+
+# ============================================================
+# SERVIDOR DE SAÚDE
+# ============================================================
+
+class Saude(
+    BaseHTTPRequestHandler
+):
+
+    def do_GET(self):
+
+        self.send_response(200)
+
+        self.end_headers()
+
+        self.wfile.write(
+            b"ok"
+        )
+
+    def do_HEAD(self):
+
+        self.send_response(200)
+
+        self.end_headers()
+
+    def log_message(
+        self,
+        *args
+    ):
+
+        pass
+
+
+def servidor_saude():
+
+    porta = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
+    servidor = HTTPServer(
+        (
+            "0.0.0.0",
+            porta
+        ),
+        Saude
+    )
+
+    servidor.serve_forever()
+
+
+# ============================================================
+# INICIAR
+# ============================================================
+
+if __name__ == "__main__":
+
+    threading.Thread(
+        target=servidor_saude,
+        daemon=True
+    ).start()
+
+    threading.Thread(
+        target=publicador_automatico,
+        daemon=True
+    ).start()
+
+    print(
+        "======================================"
+    )
+
+    print(
+        "✅ SISTEMA COMPLETO ATIVO"
+    )
+
+    print(
+        "⏰ 5 PRODUTOS POR HORA"
+    )
+
+    print(
+        "💰 LEITOR DE PREÇOS ATIVO"
+    )
+
+    print(
+        "🖼️ LEITOR DE IMAGENS ATIVO"
+    )
+
+    print(
+        "🛍️ LEITOR DE NOMES ATIVO"
+    )
+
+    print(
+        "📸 FILE_ID TELEGRAM ATIVO"
+    )
+
+    print(
+        "🔗 LEITOR DE LINKS ATIVO"
+    )
+
+    print(
+        "======================================"
+    )
+
+    iniciar_bot()
