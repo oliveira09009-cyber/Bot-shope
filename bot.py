@@ -1368,6 +1368,17 @@ def extrair_imagens(
 
             finais.append(imagem)
 
+    # Só aceita imagens de produto (CDN de arquivos da Shopee).
+    # Descarta banners/logos genéricos da página.
+    finais = [
+        i for i in finais
+        if re.search(
+            r"susercontent\.com/file/[A-Za-z0-9_-]{16,}",
+            i,
+            re.IGNORECASE
+        )
+    ]
+
     print(
         "🖼️ CANDIDATAS DE IMAGEM:",
         len(finais)
@@ -1426,20 +1437,7 @@ def resolver_com_historico(link):
     return r.url, urls
 
 
-def consultar_api_shopee(shopid, itemid):
-    url = (
-        "https://shopee.com.br/api/v4/item/get"
-        f"?itemid={itemid}&shopid={shopid}"
-    )
-    r = requests.get(url, headers=API_HEADERS, timeout=30)
-    print("🌐 API Shopee status:", r.status_code)
-    if r.status_code != 200:
-        print("🌐 API Shopee corpo:", r.text[:200])
-        return None
-    d = (r.json() or {}).get("data")
-    if not d:
-        print("⚠️ API Shopee sem data:", r.text[:200])
-        return None
+def _montar_dados_api(d):
     base = (d.get("price") or 0)
     menor = (d.get("price_min") or base) / 100000
     maior = (d.get("price_max") or base) / 100000
@@ -1447,12 +1445,60 @@ def consultar_api_shopee(shopid, itemid):
         f"https://down-br.img.susercontent.com/file/{i}"
         for i in (d.get("images") or [])
     ]
+    if not imagens and d.get("image"):
+        imagens = [
+            "https://down-br.img.susercontent.com/file/" + d["image"]
+        ]
     return {
-        "nome": d.get("name"),
+        "nome": d.get("name") or d.get("title"),
         "menor": menor,
         "maior": maior,
         "imagens": imagens,
     }
+
+
+def consultar_api_shopee(shopid, itemid):
+
+    rotas = [
+        (
+            "https://shopee.com.br/api/v4/item/get"
+            f"?itemid={itemid}&shopid={shopid}"
+        ),
+        (
+            "https://shopee.com.br/api/v4/pdp/get_pc"
+            f"?item_id={itemid}&shop_id={shopid}"
+            "&tz_offset_minutes=-180&detail_level=0"
+        ),
+    ]
+
+    for url in rotas:
+        try:
+            r = requests.get(url, headers=API_HEADERS, timeout=30)
+            print("🌐 API Shopee:", url.split("?")[0][-22:], r.status_code)
+
+            if r.status_code != 200:
+                print("🌐 corpo:", r.text[:200])
+                continue
+
+            j = r.json() or {}
+            d = j.get("data")
+
+            if isinstance(d, dict) and isinstance(d.get("item"), dict):
+                d = d["item"]
+
+            if not d:
+                print("⚠️ sem data:", r.text[:200])
+                continue
+
+            dados = _montar_dados_api(d)
+
+            if dados["nome"]:
+                return dados
+
+        except Exception as erro:
+            print("⚠️ Erro rota API:", repr(erro))
+
+    return None
 
 
 # ============================================================
