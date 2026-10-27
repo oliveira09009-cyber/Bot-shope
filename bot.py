@@ -27,8 +27,9 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 # 720 segundos = 12 minutos = 5 produtos por hora
 INTERVALO = 720
 
+# A Shopee entrega o HTML completo para estes robôs de pré-visualização.
+# O facebookexternalhit leva 403 e ficou de fora.
 CRAWLER_UAS = [
-    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
     "WhatsApp/2.23.20.0 A",
     "TelegramBot (like TwitterBot)",
     "Twitterbot/1.0",
@@ -1000,6 +1001,14 @@ def extrair_nome(html_text, url):
             encontrado.group(1)
         )
 
+        # tira o sufixo de SEO: "... | Shopee Brasil"
+        nome = re.sub(
+            r"\s*[|\-–—]\s*shopee(\s+brasil)?\s*$",
+            "",
+            nome,
+            flags=re.IGNORECASE
+        ).strip()
+
         if len(nome) >= 5:
             candidatos.append(nome)
 
@@ -1440,10 +1449,13 @@ def extrair_ids(*urls):
 
 def resolver_com_historico(link):
     melhor = None
-    for hdr in [headers_crawler(CRAWLER_UAS[0]), HEADERS]:
+    for ua in CRAWLER_UAS:
         try:
             r = requests.get(
-                link, headers=hdr, allow_redirects=True, timeout=30
+                link,
+                headers=headers_crawler(ua),
+                allow_redirects=True,
+                timeout=30
             )
         except Exception as erro:
             print("⚠️ Erro resolvendo:", repr(erro))
@@ -1451,13 +1463,13 @@ def resolver_com_historico(link):
         urls = [h.headers.get("Location", "") for h in r.history]
         urls += [h.url for h in r.history] + [r.url]
         print("🔗 Redirecionamentos:", [u[:120] for u in urls if u])
-        if extrair_ids(*urls):
-            return r.url, urls
         if melhor is None:
             melhor = (r.url, urls)
+        if extrair_ids(*urls):
+            return r.url, urls
     if melhor:
         return melhor
-    raise RuntimeError("não resolveu o link")
+    return link, [link]
 
 
 def _montar_dados_api(d):
