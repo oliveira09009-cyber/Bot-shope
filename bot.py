@@ -5,7 +5,7 @@ import time
 import threading
 import re
 import html
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit, unquote
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # ============================================================
@@ -1387,6 +1387,75 @@ def extrair_imagens(
 
 
 # ============================================================
+# API INTERNA DA SHOPEE (sem API oficial)
+# ============================================================
+
+API_HEADERS = {
+    **HEADERS,
+    "Accept": "application/json",
+    "Referer": "https://shopee.com.br/",
+    "X-API-SOURCE": "pc",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+# opcional: cookie copiado do navegador logado
+if os.environ.get("SHOPEE_COOKIE"):
+    API_HEADERS["Cookie"] = os.environ["SHOPEE_COOKIE"]
+
+
+def extrair_ids(*urls):
+    for u in urls:
+        u = unquote(unquote(u or ""))
+        for padrao in (
+            r"i\.(\d+)\.(\d+)",
+            r"/product/(\d+)/(\d+)",
+            r"/(\d{5,})/(\d{5,})(?:[/?]|$)",
+        ):
+            m = re.search(padrao, u)
+            if m:
+                return m.group(1), m.group(2)  # shopid, itemid
+    return None
+
+
+def resolver_com_historico(link):
+    r = requests.get(
+        link, headers=HEADERS, allow_redirects=True, timeout=30
+    )
+    urls = [h.headers.get("Location", "") for h in r.history]
+    urls += [h.url for h in r.history] + [r.url]
+    return r.url, urls
+
+
+def consultar_api_shopee(shopid, itemid):
+    url = (
+        "https://shopee.com.br/api/v4/item/get"
+        f"?itemid={itemid}&shopid={shopid}"
+    )
+    r = requests.get(url, headers=API_HEADERS, timeout=30)
+    print("🌐 API Shopee status:", r.status_code)
+    if r.status_code != 200:
+        print("🌐 API Shopee corpo:", r.text[:200])
+        return None
+    d = (r.json() or {}).get("data")
+    if not d:
+        print("⚠️ API Shopee sem data:", r.text[:200])
+        return None
+    base = (d.get("price") or 0)
+    menor = (d.get("price_min") or base) / 100000
+    maior = (d.get("price_max") or base) / 100000
+    imagens = [
+        f"https://down-br.img.susercontent.com/file/{i}"
+        for i in (d.get("images") or [])
+    ]
+    return {
+        "nome": d.get("name"),
+        "menor": menor,
+        "maior": maior,
+        "imagens": imagens,
+    }
+
+
+# ============================================================
 # CONSULTAR SHOPEE
 # ============================================================
 
@@ -1414,6 +1483,50 @@ def consultar_shopee(link):
         return resultado
 
     resultado["link"] = link_original
+
+    # --------------------------------------------------------
+    # TENTA A API INTERNA PRIMEIRO
+    # --------------------------------------------------------
+
+    try:
+        url_final, historico = resolver_com_historico(link_original)
+        resultado["link_resolvido"] = url_final
+        ids = extrair_ids(url_final, *historico, link_original)
+    except Exception as erro:
+        print("⚠️ Erro resolvendo:", erro)
+        ids = extrair_ids(link_original)
+
+    print("🆔 IDs (shopid, itemid):", ids)
+
+    if ids:
+        try:
+            dados_api = consultar_api_shopee(*ids)
+        except Exception as erro:
+            print("⚠️ Erro API Shopee:", repr(erro))
+            dados_api = None
+
+        if dados_api and dados_api["nome"]:
+            resultado["nome"] = dados_api["nome"]
+            resultado["imagens"] = dados_api["imagens"]
+            resultado["preco"] = {
+                "tipo": (
+                    "faixa"
+                    if dados_api["maior"] > dados_api["menor"]
+                    else "unico"
+                ),
+                "menor": dados_api["menor"],
+                "maior": dados_api["maior"],
+            }
+            for img in dados_api["imagens"][:8]:
+                if baixar_imagem(img, referer="https://shopee.com.br/"):
+                    resultado["imagem"] = img
+                    resultado["imagem_validada"] = True
+                    break
+            print("✅ Dados obtidos pela API:", resultado["nome"])
+            return resultado
+
+    # Se a API falhar, segue o método antigo (HTML) abaixo.
+
 
     link_final = resolver_link(
         link_original
@@ -2656,6 +2769,7 @@ Limpar fila"""
 
     print(
         "✅ PRODUTO SALVO NA FILA"
+    )
 
     print(
         "🛍️ NOME:",
