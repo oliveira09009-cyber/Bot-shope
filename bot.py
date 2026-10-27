@@ -773,13 +773,43 @@ def extrair_precos(texto):
         r"R\$\s*([0-9]+(?:\.[0-9]{2})?)"
     ]
 
+    # Ignora parcelamento ("12x R$ 13,87") e frete: nao sao preco do produto.
+    ruido = re.compile(
+        r"(?:\d+\s*x\s*)?"
+        r"(?:R\$\s*[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}"
+        r"|R\$\s*[0-9]+(?:\.[0-9]{2})?)"
+        r"\s*(?:x\b|/mes|por mes|no mes)?"
+        r"\s*(?:de\s*)?(?:frete|parcela|juros)?",
+        re.IGNORECASE
+    )
+
     for padrao in padroes:
 
-        for valor in re.findall(
+        for encontrado in re.finditer(
             padrao,
             texto,
             re.IGNORECASE
         ):
+
+            valor = encontrado.group(1)
+
+            antes = texto[max(0, encontrado.start() - 12):encontrado.start()]
+
+            depois = texto[encontrado.end():encontrado.end() + 25]
+
+            contexto = (antes + " " + depois).lower()
+
+            if re.search(r"\d+\s*x\s*$", antes.lower()):
+                continue
+
+            if re.search(r"^\s*x\b", depois.lower()):
+                continue
+
+            if "frete" in contexto and "grátis" not in contexto:
+                continue
+
+            if "parcela" in contexto or "juros" in contexto:
+                continue
 
             numero = converter_preco(
                 valor
