@@ -1492,6 +1492,35 @@ def _montar_dados_api(d):
     }
 
 
+def ids_do_html(html_text):
+    if not html_text:
+        return None
+
+    texto = (
+        html_text
+        .replace("\\/", "/")
+        .replace("\\u002F", "/")
+        .replace("\\u002f", "/")
+    )
+
+    campos = (
+        r'"shopid"\s*:\s*"?\d+"?\s*,\s*"itemid"\s*:\s*"?\d+"?',
+        r'"itemid"\s*:\s*"?\d+"?\s*,\s*"shopid"\s*:\s*"?\d+"?',
+    )
+
+    for padrao in campos:
+        m = re.search(padrao, texto)
+        if not m:
+            continue
+        shop = re.search(r'shopid"\s*:\s*"?(\d+)', m.group(0))
+        item = re.search(r'itemid"\s*:\s*"?(\d+)', m.group(0))
+        if shop and item:
+            return shop.group(1), item.group(1)
+
+    # formato apple-touch / canonical: i.SHOPID.ITEMID
+    return extrair_ids(texto)
+
+
 def consultar_api_shopee(shopid, itemid):
 
     rotas = [
@@ -1626,13 +1655,61 @@ def consultar_shopee(link):
         return resultado
 
     # --------------------------------------------------------
+    # ID ACHADO DENTRO DO HTML (links curtos nao expoem na URL)
+    # --------------------------------------------------------
+
+    if not ids:
+        ids = ids_do_html(html_text)
+        print("🆔 IDs vindos do HTML:", ids)
+
+        if ids:
+            try:
+                dados_api = consultar_api_shopee(*ids)
+            except Exception as erro:
+                print("⚠️ Erro API Shopee:", repr(erro))
+                dados_api = None
+
+            if dados_api and dados_api["nome"]:
+                resultado["nome"] = dados_api["nome"]
+                resultado["imagens"] = dados_api["imagens"]
+                resultado["preco"] = {
+                    "tipo": (
+                        "faixa"
+                        if dados_api["maior"] > dados_api["menor"]
+                        else "unico"
+                    ),
+                    "menor": dados_api["menor"],
+                    "maior": dados_api["maior"],
+                }
+                for img in dados_api["imagens"][:8]:
+                    if baixar_imagem(img, referer="https://shopee.com.br/"):
+                        resultado["imagem"] = img
+                        resultado["imagem_validada"] = True
+                        break
+                print("✅ Dados obtidos pela API:", resultado["nome"])
+                return resultado
+
+    # --------------------------------------------------------
     # NOME
     # --------------------------------------------------------
 
-    resultado["nome"] = extrair_nome(
+    nome_produto = extrair_nome(
         html_text,
         url_real
     )
+
+    if nome_produto:
+        nome_produto = re.sub(
+            r"[.\u2026]{2,}\s*$", "", nome_produto
+        ).strip()
+        nome_produto = re.sub(
+            r"\s+", " ", nome_produto
+        ).strip()
+
+        if re.search(r"[A-Za-zÀ-ÿ]$", nome_produto) is None:
+            nome_produto = nome_produto.rstrip(" -–—,;:")
+
+    resultado["nome"] = nome_produto or None
 
     # --------------------------------------------------------
     # IMAGENS
