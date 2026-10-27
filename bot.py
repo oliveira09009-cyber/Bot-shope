@@ -3,6 +3,7 @@ import json
 import os
 import time
 import threading
+from datetime import datetime, timedelta
 import re
 import html
 from urllib.parse import urljoin, urlsplit, urlunsplit, unquote
@@ -26,6 +27,61 @@ ADMIN_ID = os.environ.get("ADMIN_ID")
 
 # 720 segundos = 12 minutos = 5 produtos por hora
 INTERVALO = 720
+
+# Janela de publicacao (horario de Sao Paulo)
+HORA_INICIO = 5
+HORA_FIM = 23
+FUSO = "America/Sao_Paulo"
+
+
+def agora_local():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(FUSO))
+    except Exception:
+        # fallback: UTC-3 fixo
+        return datetime.utcnow() - timedelta(hours=3)
+
+
+def dentro_da_janela():
+    agora = agora_local()
+    return HORA_INICIO <= agora.hour < HORA_FIM
+
+
+def proxima_abertura():
+    agora = agora_local()
+    if agora.hour < HORA_INICIO:
+        alvo = agora.replace(
+            hour=HORA_INICIO, minute=0, second=0, microsecond=0
+        )
+    else:
+        alvo = (agora + timedelta(days=1)).replace(
+            hour=HORA_INICIO, minute=0, second=0, microsecond=0
+        )
+    return alvo
+
+
+def texto_proximo_post():
+    if not dentro_da_janela():
+        return "⏸️ Fora do horario. Proximo post: " + proxima_abertura().strftime("%d/%m as %H:%M")
+
+    ultimo = float(redis_cmd("GET", "ultimo_post") or 0)
+    if not ultimo:
+        return "▶️ Pode publicar agora."
+
+    faltam = int(INTERVALO - (time.time() - ultimo))
+    if faltam <= 0:
+        return "▶️ Pode publicar agora."
+
+    agora = agora_local()
+    proximo = agora + timedelta(seconds=faltam)
+
+    if proximo.hour >= HORA_FIM or proximo.hour < HORA_INICIO:
+        return "⏸️ Proximo post: " + proxima_abertura().strftime("%d/%m as %H:%M")
+
+    return "⏰ Proximo post em ~{} min ({}).".format(
+        faltam // 60, proximo.strftime("%H:%M")
+    )
 
 CRAWLER_UAS = [
     "WhatsApp/2.23.20.0 A",
@@ -2604,7 +2660,16 @@ def publicador_automatico():
                 ) or 0
             )
 
-            if (
+            if not dentro_da_janela():
+
+                agora = agora_local()
+                print(
+                    "⏸️ Fora da janela ({}h). Abre as {}h.".format(
+                        agora.hour, HORA_INICIO
+                    )
+                )
+
+            elif (
                 time.time() - ultimo
                 >= INTERVALO
             ):
@@ -2639,13 +2704,18 @@ def mostrar_fila(chat_id):
 
         enviar_mensagem(
             chat_id,
-            "📭 A fila está vazia."
+            "📭 A fila está vazia.\n"
+            + texto_proximo_post()
         )
 
         return
 
     mensagem = (
-        "📦 PRODUTOS NA FILA\n\n"
+        "📦 PRODUTOS NA FILA ("
+        + str(len(fila))
+        + ")\n\n"
+        + texto_proximo_post()
+        + "\n\n"
     )
 
     for numero, produto in enumerate(
