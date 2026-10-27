@@ -1521,6 +1521,12 @@ def _montar_dados_api(d):
         "menor": menor,
         "maior": maior,
         "imagens": imagens,
+        "parcelas": (
+            f'{int(d["installment_count"])}x de R$ '
+            + formatar_preco(d["price"] / 100000 / int(d["installment_count"]))
+            if d.get("installment_count") and d.get("price")
+            else None
+        ),
     }
 
 
@@ -1558,6 +1564,23 @@ def consultar_api_shopee(shopid, itemid):
                 continue
 
             dados = _montar_dados_api(d)
+
+            if d.get("price_before_discount") and d.get("price"):
+                antes = d["price_before_discount"] / 100000
+                agora = d["price"] / 100000
+                if antes > agora:
+                    dados["desconto"] = {
+                        "de": antes,
+                        "por": agora,
+                        "pct": int(round((antes - agora) / antes * 100)),
+                    }
+
+            rating = d.get("item_rating") or {}
+            if rating.get("rating_star"):
+                dados["nota"] = round(float(rating["rating_star"]), 2)
+
+            if d.get("item_card_discount") or d.get("voucher_off"):
+                pass
 
             if dados["nome"]:
                 return dados
@@ -1721,6 +1744,19 @@ def consultar_shopee(link):
     )
 
     resultado["imagens"] = imagens
+    resultado["html"] = html_text
+
+    desconto = extrair_desconto(html_text)
+    if desconto:
+        resultado["desconto"] = desconto
+
+    nota = extrair_avaliacao(html_text)
+    if nota:
+        resultado["nota"] = nota
+
+    cupom = extrair_cupom(html_text)
+    if cupom:
+        resultado["cupom"] = cupom
 
     # --------------------------------------------------------
     # TESTAR AS IMAGENS IMEDIATAMENTE
@@ -1858,6 +1894,89 @@ def consultar_shopee(link):
 # ============================================================
 # PREÇO DA MENSAGEM
 # ============================================================
+
+def extrair_desconto(texto):
+    if not texto:
+        return None
+
+    texto = html.unescape(texto)
+
+    padrao = re.compile(
+        r"(?:de\s*)?R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})"
+        r"\s*(?:por|->|=>|→)\s*"
+        r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
+        re.IGNORECASE
+    )
+
+    m = padrao.search(texto)
+    if not m:
+        return None
+
+    de = converter_preco(m.group(1))
+    por = converter_preco(m.group(2))
+
+    if not de or not por or de <= por:
+        return None
+
+    return {"de": de, "por": por, "pct": int(round((de - por) / de * 100))}
+
+
+def extrair_avaliacao(texto):
+    if not texto:
+        return None
+
+    texto = html.unescape(texto)
+
+    nota = re.search(
+        r"(\d[.,]\d)\s*(?:de\s*5)?\s*estrela",
+        texto,
+        re.IGNORECASE
+    )
+
+    if not nota:
+        nota = re.search(
+            r"rating_star\"\s*:\s*([0-9]+(?:\.[0-9]+)?)",
+            texto,
+            re.IGNORECASE
+        )
+
+    if not nota:
+        return None
+
+    valor = nota.group(1).replace(",", ".")
+
+    try:
+        valor = float(valor)
+    except Exception:
+        return None
+
+    if valor <= 0 or valor > 5:
+        return None
+
+    return round(valor, 2)
+
+
+def extrair_cupom(texto):
+    if not texto:
+        return None
+
+    texto = html.unescape(texto)
+
+    m = re.search(
+        r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})\s*OFF",
+        texto,
+        re.IGNORECASE
+    )
+
+    if not m:
+        return None
+
+    valor = converter_preco(m.group(1))
+
+    if not valor or valor <= 0 or valor > 500:
+        return None
+
+    return valor
 
 def texto_preco(preco):
 
@@ -2197,16 +2316,51 @@ def publicar_proximo():
         dados.get("imagem")
     )
 
-    legenda = f"""🔥 ACHADINHO DA SHOPEE 🔥
+    # --------------------------------------------------------
+    # DADOS EXTRAS DO POST
+    # --------------------------------------------------------
 
-🛍️ {nome}
+    html_produto = dados.get("html") or ""
 
-{texto_preco(preco)}
-⚡ Aproveite enquanto estiver disponível!
+    desconto = dados.get("desconto") or extrair_desconto(html_produto)
+    nota = dados.get("nota") or extrair_avaliacao(html_produto)
+    cupom = dados.get("cupom") or extrair_cupom(html_produto)
+    parcelas = dados.get("parcelas")
 
-👇 Clique abaixo para conferir:
+    linhas = []
 
-🛒 COMPRAR AGORA"""
+    if desconto:
+        linhas.append(
+            "🏷️ " + formatar_preco(desconto["de"])
+            + " por " + formatar_preco(desconto["por"])
+            + " (-{}%)".format(desconto["pct"])
+        )
+    else:
+        linhas.append(texto_preco(preco))
+
+    if parcelas:
+        linhas.append("💳 " + parcelas)
+
+    if cupom:
+        linhas.append("🎟️ Cupom de " + formatar_preco(cupom) + " OFF")
+
+    if nota:
+        estrelas = int(round(nota))
+        linhas.append(
+            "⭐ " + ("%.1f" % nota).replace(".", ",")
+            + " " + ("★" * estrelas)
+        )
+
+    detalhes = "\n".join(linhas)
+
+    legenda = (
+        "🔥 ACHADINHO DA SHOPEE 🔥\n\n"
+        "🛍️ " + nome + "\n\n"
+        + detalhes + "\n"
+        "⚡ Aproveite enquanto estiver disponível!\n\n"
+        "👇 Clique abaixo para conferir:\n\n"
+        "🛒 COMPRAR AGORA"
+    )
 
     teclado = {
         "inline_keyboard": [[
