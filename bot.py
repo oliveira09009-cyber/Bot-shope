@@ -2656,7 +2656,6 @@ Limpar fila"""
 
     print(
         "✅ PRODUTO SALVO NA FILA"
-    )
 
     print(
         "🛍️ NOME:",
