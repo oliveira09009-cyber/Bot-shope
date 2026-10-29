@@ -1656,29 +1656,77 @@ def ids_do_html(html_text):
     return extrair_ids(texto)
 
 
+def _preco_api_para_reais(valor):
+    """
+    Converte preços internos da Shopee para reais.
+    A API interna normalmente entrega valores multiplicados por 100.000.
+    Retorna None quando não há preço válido.
+    """
+    if valor is None or isinstance(valor, bool):
+        return None
+    try:
+        numero = float(str(valor).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    if numero <= 0:
+        return None
+    if numero >= 1000:
+        numero /= 100000
+    if numero <= 0 or numero > 100000:
+        return None
+    return round(numero, 2)
+
+
 def _montar_dados_api(d):
-    base = (d.get("price") or 0)
-    menor = (d.get("price_min") or base) / 100000
-    maior = (d.get("price_max") or base) / 100000
+    base = (
+        d.get("price")
+        or d.get("current_price")
+        or d.get("sale_price")
+        or d.get("price_min")
+        or d.get("priceMin")
+    )
+    menor = _preco_api_para_reais(
+        d.get("price_min") or d.get("priceMin") or base
+    )
+    maior = _preco_api_para_reais(
+        d.get("price_max") or d.get("priceMax") or base
+    )
+
+    if menor is None:
+        menor = _preco_api_para_reais(base)
+    if maior is None:
+        maior = _preco_api_para_reais(base)
+    if menor is not None and maior is not None and maior < menor:
+        menor, maior = maior, menor
+
     imagens = [
         f"https://down-br.img.susercontent.com/file/{i}"
         for i in (d.get("images") or [])
+        if isinstance(i, str) and i
     ]
-    if not imagens and d.get("image"):
+    if not imagens and isinstance(d.get("image"), str) and d["image"]:
         imagens = [
             "https://down-br.img.susercontent.com/file/" + d["image"]
         ]
+
+    parcelas = None
+    try:
+        quantidade = int(d.get("installment_count") or 0)
+        preco_base = _preco_api_para_reais(base)
+        if quantidade > 0 and preco_base:
+            parcelas = (
+                f"{quantidade}x de R$ "
+                + formatar_preco(preco_base / quantidade)
+            )
+    except (TypeError, ValueError):
+        pass
+
     return {
         "nome": d.get("name") or d.get("title"),
         "menor": menor,
         "maior": maior,
         "imagens": imagens,
-        "parcelas": (
-            f'{int(d["installment_count"])}x de R$ '
-            + formatar_preco(d["price"] / 100000 / int(d["installment_count"]))
-            if d.get("installment_count") and d.get("price")
-            else None
-        ),
+        "parcelas": parcelas,
     }
 
 
@@ -1796,23 +1844,27 @@ def consultar_shopee(link):
         if dados_api and dados_api["nome"]:
             resultado["nome"] = dados_api["nome"]
             resultado["imagens"] = dados_api["imagens"]
-            resultado["preco"] = {
-                "tipo": (
-                    "faixa"
-                    if dados_api["maior"] > dados_api["menor"]
-                    else "unico"
-                ),
-                "menor": dados_api["menor"],
-                "maior": dados_api["maior"],
-            }
+            if dados_api.get("menor") is not None:
+                resultado["preco"] = {
+                    "tipo": (
+                        "faixa"
+                        if dados_api.get("maior") is not None
+                        and dados_api["maior"] > dados_api["menor"]
+                        else "unico"
+                    ),
+                    "menor": dados_api["menor"],
+                    "maior": dados_api.get("maior") or dados_api["menor"],
+                }
             for img in dados_api["imagens"][:8]:
                 if baixar_imagem(img, referer="https://shopee.com.br/"):
                     resultado["imagem"] = img
                     resultado["imagem_validada"] = True
                     break
             print("✅ Dados obtidos pela API:", resultado["nome"])
-            return resultado
-    # Se a API falhar, segue o método antigo (HTML) abaixo.
+            if resultado.get("preco"):
+                return resultado
+            print("⚠️ API interna não trouxe preço; tentando extrair pelo HTML.")
+    # Se a API falhar ou não trouxer preço, segue o método HTML abaixo.
 
 
     link_final = resolver_link(
@@ -1849,22 +1901,26 @@ def consultar_shopee(link):
             if dados_api and dados_api["nome"]:
                 resultado["nome"] = dados_api["nome"]
                 resultado["imagens"] = dados_api["imagens"]
-                resultado["preco"] = {
-                    "tipo": (
-                        "faixa"
-                        if dados_api["maior"] > dados_api["menor"]
-                        else "unico"
-                    ),
-                    "menor": dados_api["menor"],
-                    "maior": dados_api["maior"],
-                }
+                if dados_api.get("menor") is not None:
+                    resultado["preco"] = {
+                        "tipo": (
+                            "faixa"
+                            if dados_api.get("maior") is not None
+                            and dados_api["maior"] > dados_api["menor"]
+                            else "unico"
+                        ),
+                        "menor": dados_api["menor"],
+                        "maior": dados_api.get("maior") or dados_api["menor"],
+                    }
                 for img in dados_api["imagens"][:8]:
                     if baixar_imagem(img, referer="https://shopee.com.br/"):
                         resultado["imagem"] = img
                         resultado["imagem_validada"] = True
                         break
                 print("✅ Dados obtidos pela API:", resultado["nome"])
-                return resultado
+                if resultado.get("preco"):
+                    return resultado
+                print("⚠️ API interna não trouxe preço; tentando extrair pelo HTML.")
 
     # --------------------------------------------------------
     # NOME
@@ -1884,7 +1940,7 @@ def consultar_shopee(link):
         ).strip()
         nome_produto = nome_produto.rstrip(" -–—,;:")
 
-    resultado["nome"] = nome_produto or None
+    resultado["nome"] = nome_produto or resultado.get("nome") or None
 
     # --------------------------------------------------------
     # IMAGENS
