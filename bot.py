@@ -1790,6 +1790,132 @@ def consultar_api_shopee(shopid, itemid):
 
     return None
 
+
+def _normalizar_tokens_produto(texto):
+    texto = (texto or "").lower()
+    texto = re.sub(r"https?://\S+", " ", texto)
+    texto = re.sub(r"[^a-z0-9áàâãéêíóôõúç]+", " ", texto)
+    ignorar = {
+        "de", "da", "do", "das", "dos", "com", "para", "por", "em",
+        "e", "a", "o", "as", "os", "um", "uma", "novo", "nova",
+        "original", "oficial", "produto", "oferta", "shopee"
+    }
+    return {t for t in texto.split() if len(t) > 2 and t not in ignorar}
+
+
+def _pontuacao_nome_produto(nome_base, nome_candidato):
+    a = _normalizar_tokens_produto(nome_base)
+    b = _normalizar_tokens_produto(nome_candidato)
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    # Mede a cobertura do nome recebido, pois o título da Shopee pode vir truncado.
+    cobertura = inter / len(a)
+    jaccard = inter / len(a | b)
+    return (0.75 * cobertura) + (0.25 * jaccard)
+
+
+def consultar_preco_api_afiliado_por_nome(nome_produto):
+    """Busca o produto na API oficial de afiliados quando o link curto não revela IDs.
+
+    Só aceita resultado com semelhança suficiente ao nome extraído da página.
+    O preço anterior é estimado a partir do percentual de desconto quando disponível.
+    """
+    if not SHOPEE_APP_ID or not SHOPEE_SECRET or not nome_produto:
+        print("⚠️ Busca por nome indisponível: credenciais ou nome ausentes.")
+        return None
+
+    tokens = list(_normalizar_tokens_produto(nome_produto))
+    if not tokens:
+        return None
+    # A busca da API aceita keyword. Mantemos uma consulta curta e distintiva.
+    keyword = " ".join(tokens[:8])[:100]
+    query = (
+        "{ productOfferV2(keyword: " + json.dumps(keyword, ensure_ascii=False)
+        + ", listType: 0, sortType: 1, page: 1, limit: 20) { nodes { "
+        "itemId productName productLink offerLink imageUrl priceMin priceMax "
+        "priceDiscountRate shopId shopName ratingStar sales } "
+        "pageInfo { page limit hasNextPage } } }"
+    )
+    payload = json.dumps({"query": query}, ensure_ascii=False, separators=(",", ":"))
+    timestamp = str(int(time.time()))
+    assinatura = hashlib.sha256(
+        (SHOPEE_APP_ID + timestamp + payload + SHOPEE_SECRET).encode("utf-8")
+    ).hexdigest()
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": (
+            f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, "
+            f"Signature={assinatura}"
+        )
+    }
+
+    try:
+        print("🔎 Buscando preço na API oficial por nome:", keyword)
+        resposta = requests.post(
+            SHOPEE_API_URL, headers=headers, data=payload.encode("utf-8"), timeout=25
+        )
+        print("💰 API afiliados productOfferV2 HTTP:", resposta.status_code)
+        resposta.raise_for_status()
+        dados = resposta.json()
+        if dados.get("errors"):
+            print("⚠️ API afiliados productOfferV2 retornou erros:", dados["errors"])
+            return None
+        nodes = (dados.get("data", {}).get("productOfferV2", {}) or {}).get("nodes", []) or []
+        if not nodes:
+            print("⚠️ API afiliados não encontrou produtos para o nome.")
+            return None
+
+        classificados = sorted(
+            ((_pontuacao_nome_produto(nome_produto, n.get("productName", "")), n) for n in nodes),
+            key=lambda x: x[0], reverse=True
+        )
+        score, melhor = classificados[0]
+        nome_api = melhor.get("productName") or ""
+        print(f"🔎 Melhor correspondência da API: {nome_api[:120]} (score={score:.2f})")
+        if score < 0.58:
+            print("⚠️ Correspondência fraca; preço ignorado para evitar produto errado.")
+            return None
+
+        menor = converter_preco(melhor.get("priceMin"))
+        maior = converter_preco(melhor.get("priceMax"))
+        if menor is None:
+            menor = maior
+        if maior is None:
+            maior = menor
+        if menor is None or maior is None or menor <= 0 or maior <= 0:
+            print("⚠️ API afiliados encontrou produto, mas sem preço válido.")
+            return None
+        if maior < menor:
+            menor, maior = maior, menor
+
+        resultado = {
+            "nome": nome_api,
+            "menor": menor,
+            "maior": maior,
+            "imagem": melhor.get("imageUrl"),
+            "link": melhor.get("offerLink") or melhor.get("productLink"),
+            "desconto": None,
+            "score": score,
+        }
+        try:
+            percentual = float(melhor.get("priceDiscountRate") or 0)
+            if 0 < percentual < 100:
+                atual = menor
+                anterior = round(atual / (1 - percentual / 100), 2)
+                if anterior > atual:
+                    resultado["desconto"] = {
+                        "de": anterior, "por": atual,
+                        "pct": int(round(percentual)),
+                        "estimado": True
+                    }
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+        return resultado
+    except Exception as erro:
+        print("⚠️ Falha na busca de preço por nome:", repr(erro))
+        return None
+
 # ============================================================
 # CONSULTAR SHOPEE
 # ============================================================
@@ -2076,6 +2202,25 @@ def consultar_shopee(link):
             print(
                 "💰 Preço: None"
             )
+
+    # --------------------------------------------------------
+    # FALLBACK: API OFICIAL DE AFILIADOS POR NOME DO PRODUTO
+    # --------------------------------------------------------
+    # Usado quando o link curto não fornece shopId/itemId e o HTML não contém preço.
+    if not resultado.get("preco") and resultado.get("nome"):
+        dados_afiliado = consultar_preco_api_afiliado_por_nome(resultado["nome"])
+        if dados_afiliado:
+            resultado["preco"] = {
+                "tipo": "faixa" if dados_afiliado["maior"] > dados_afiliado["menor"] else "unico",
+                "menor": dados_afiliado["menor"],
+                "maior": dados_afiliado["maior"],
+            }
+            if dados_afiliado.get("desconto"):
+                resultado["desconto"] = dados_afiliado["desconto"]
+            if dados_afiliado.get("imagem") and not resultado.get("imagem"):
+                resultado["imagem"] = dados_afiliado["imagem"]
+                resultado["imagens"] = resultado.get("imagens") or [dados_afiliado["imagem"]]
+            print("✅ Preço obtido pela API oficial de afiliados por correspondência de nome.")
 
     print(
         "🛍️ Nome:",
@@ -2544,10 +2689,11 @@ def publicar_proximo():
     linhas = []
 
     if desconto:
+        sufixo_estimado = " (preço anterior estimado)" if desconto.get("estimado") else ""
         linhas.append(
             "🏷️ " + formatar_preco(desconto["de"])
             + " por " + formatar_preco(desconto["por"])
-            + " (-{}%)".format(desconto["pct"])
+            + " (-{}%)".format(desconto["pct"]) + sufixo_estimado
         )
     else:
         linhas.append(texto_preco(preco))
@@ -3100,16 +3246,13 @@ def processar_mensagem(mensagem):
             legenda
         )
 
-        preco_msg = extrair_preco_mensagem(
-            legenda
-        )
-
-        # FOTO DO USUÁRIO
+        # O preço será consultado automaticamente na Shopee durante a publicação.
+        # Não usamos valores digitados ou copiados na legenda.
         adicionado, posicao = adicionar_na_fila(
             nome,
             link,
             file_id,
-            preco_msg
+            None
         )
 
         if not adicionado:
@@ -3121,13 +3264,7 @@ def processar_mensagem(mensagem):
 
             return
 
-        linha_preco = (
-            texto_preco(preco_msg)
-            + " (da legenda)"
-            if preco_msg
-            else
-            "💰 Preço será consultado na Shopee."
-        )
+        linha_preco = "💰 Preço será consultado automaticamente na Shopee."
 
         enviar_mensagem(
             chat_id,
@@ -3302,10 +3439,8 @@ Limpar fila"""
     # PREÇO
     # ========================================================
 
-    preco = (
-        preco_msg
-        or dados.get("preco")
-    )
+    # O preço deve vir da consulta automática à Shopee, nunca do texto copiado.
+    preco = dados.get("preco")
 
     # ========================================================
     # IMAGEM
@@ -3344,14 +3479,7 @@ Limpar fila"""
     # MENSAGEM DE CONFIRMAÇÃO
     # ========================================================
 
-    if preco_msg:
-
-        linha_preco = (
-            texto_preco(preco_msg)
-            + " (da mensagem)"
-        )
-
-    elif dados.get("preco"):
+    if dados.get("preco"):
 
         linha_preco = (
             texto_preco(
