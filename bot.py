@@ -1,4 +1,3 @@
-
 import requests
 import hashlib
 import json
@@ -602,10 +601,11 @@ def gerar_link_afiliado(link_original):
 
         # json.dumps produz uma string escapada para usar como valor GraphQL.
         url_graphql = json.dumps(link_original, ensure_ascii=False)
+        # Primeiro teste sem subIds: a API retornou erro 11001
+        # ("invalid sub id") para os valores enviados anteriormente.
         query = (
             "mutation { generateShortLink(input: { "
             f"originUrl: {url_graphql} "
-            'subIds: ["telegram", "achados_da_shopee"] '
             "}) { shortLink } }"
         )
 
