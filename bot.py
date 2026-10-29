@@ -1,4 +1,6 @@
+
 import requests
+import hashlib
 import json
 import os
 import time
@@ -24,6 +26,11 @@ REDIS_URL = os.environ["UPSTASH_REDIS_REST_URL"]
 REDIS_TOKEN = os.environ["UPSTASH_REDIS_REST_TOKEN"]
 
 ADMIN_ID = os.environ.get("ADMIN_ID")
+
+# Credenciais da API oficial de Afiliados Shopee (configurar no Render)
+SHOPEE_APP_ID = os.environ.get("SHOPEE_APP_ID", "").strip()
+SHOPEE_SECRET = os.environ.get("SHOPEE_SECRET", "").strip()
+SHOPEE_API_URL = "https://open-api.affiliate.shopee.com.br/graphql"
 
 # 720 segundos = 12 minutos = 5 produtos por hora
 INTERVALO = 720
@@ -569,6 +576,95 @@ def normalizar_link(link):
         )
 
         return None
+
+
+
+# ============================================================
+# API OFICIAL DE AFILIADOS SHOPEE: GERAR LINK CURTO
+# ============================================================
+
+def gerar_link_afiliado(link_original):
+    """
+    Gera um link curto rastreável pela API oficial da Shopee.
+    Se a API não estiver configurada ou falhar, preserva o link original.
+    """
+
+    link_original = normalizar_link(link_original)
+    if not link_original:
+        return None
+
+    if not SHOPEE_APP_ID or not SHOPEE_SECRET:
+        print("⚠️ SHOPEE_APP_ID/SHOPEE_SECRET não configurados; mantendo link atual.")
+        return link_original
+
+    try:
+        timestamp = str(int(time.time()))
+
+        # json.dumps produz uma string escapada para usar como valor GraphQL.
+        url_graphql = json.dumps(link_original, ensure_ascii=False)
+        query = (
+            "mutation { generateShortLink(input: { "
+            f"originUrl: {url_graphql} "
+            'subIds: ["telegram", "achados_da_shopee"] '
+            "}) { shortLink } }"
+        )
+
+        # A assinatura precisa usar exatamente o corpo enviado.
+        payload = json.dumps(
+            {"query": query},
+            ensure_ascii=False,
+            separators=(",", ":")
+        )
+
+        assinatura = hashlib.sha256(
+            (
+                SHOPEE_APP_ID
+                + timestamp
+                + payload
+                + SHOPEE_SECRET
+            ).encode("utf-8")
+        ).hexdigest()
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": (
+                f"SHA256 Credential={SHOPEE_APP_ID}, "
+                f"Timestamp={timestamp}, "
+                f"Signature={assinatura}"
+            )
+        }
+
+        resposta = requests.post(
+            SHOPEE_API_URL,
+            headers=headers,
+            data=payload.encode("utf-8"),
+            timeout=25
+        )
+
+        print("🔗 API oficial de afiliados HTTP:", resposta.status_code)
+        resposta.raise_for_status()
+        dados = resposta.json()
+
+        if dados.get("errors"):
+            print("⚠️ Erro retornado pela API de afiliados:", dados["errors"])
+            return link_original
+
+        link_curto = (
+            dados.get("data", {})
+            .get("generateShortLink", {})
+            .get("shortLink")
+        )
+
+        if isinstance(link_curto, str) and link_curto.startswith("https://"):
+            print("✅ Link curto de afiliado gerado.")
+            return link_curto
+
+        print("⚠️ API não retornou shortLink; mantendo link atual.")
+        return link_original
+
+    except Exception as erro:
+        print("⚠️ Falha ao gerar link de afiliado:", repr(erro))
+        return link_original
 
 
 def encontrar_link(texto):
@@ -2358,6 +2454,12 @@ def publicar_proximo():
     if not link_botao:
 
         link_botao = link
+
+    # Gera link curto rastreável para o botão de compra.
+    # Se a API não estiver configurada ou falhar, mantém o link atual.
+    link_afiliado = gerar_link_afiliado(link_botao)
+    if link_afiliado:
+        link_botao = link_afiliado
 
     # --------------------------------------------------------
     # IMAGEM
