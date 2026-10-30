@@ -1765,15 +1765,15 @@ def consultar_api_shopee(shopid, itemid):
 
             dados = _montar_dados_api(d)
 
-            if d.get("price_before_discount") and d.get("price"):
-                antes = d["price_before_discount"] / 100000
-                agora = d["price"] / 100000
-                if antes > agora:
-                    dados["desconto"] = {
-                        "de": antes,
-                        "por": agora,
-                        "pct": int(round((antes - agora) / antes * 100)),
-                    }
+            antes = _preco_api_para_reais(d.get("price_before_discount"))
+            agora = _preco_api_para_reais(d.get("price"))
+            if antes is not None and agora is not None and antes > agora:
+                dados["desconto"] = {
+                    "de": antes,
+                    "por": agora,
+                    "pct": int(round((antes - agora) / antes * 100)),
+                    "confirmado": True,
+                }
 
             rating = d.get("item_rating") or {}
             if rating.get("rating_star"):
@@ -1898,19 +1898,8 @@ def consultar_preco_api_afiliado_por_nome(nome_produto):
             "desconto": None,
             "score": score,
         }
-        try:
-            percentual = float(melhor.get("priceDiscountRate") or 0)
-            if 0 < percentual < 100:
-                atual = menor
-                anterior = round(atual / (1 - percentual / 100), 2)
-                if anterior > atual:
-                    resultado["desconto"] = {
-                        "de": anterior, "por": atual,
-                        "pct": int(round(percentual)),
-                        "estimado": True
-                    }
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
+        # Não estimar preço anterior a partir de percentual.
+        # Só exibiremos "De:" quando a API do item trouxer ambos os preços reais.
         return resultado
     except Exception as erro:
         print("⚠️ Falha na busca de preço por nome:", repr(erro))
@@ -1981,6 +1970,12 @@ def consultar_shopee(link):
                     "menor": dados_api["menor"],
                     "maior": dados_api.get("maior") or dados_api["menor"],
                 }
+            if dados_api.get("desconto", {}).get("confirmado"):
+                resultado["desconto"] = dados_api["desconto"]
+            if dados_api.get("nota"):
+                resultado["nota"] = dados_api["nota"]
+            if dados_api.get("parcelas"):
+                resultado["parcelas"] = dados_api["parcelas"]
             for img in dados_api["imagens"][:8]:
                 if baixar_imagem(img, referer="https://shopee.com.br/"):
                     resultado["imagem"] = img
@@ -2152,75 +2147,11 @@ def consultar_shopee(link):
     # --------------------------------------------------------
     # PREÇO
     # --------------------------------------------------------
-
-    faixa = extrair_faixa_preco(
-        html_text
-    )
-
-    if faixa:
-
-        resultado["preco"] = {
-            "tipo": "faixa",
-            "menor": faixa["menor"],
-            "maior": faixa["maior"]
-        }
-
-        print(
-            "💰 Faixa encontrada:",
-            formatar_preco(
-                faixa["menor"]
-            ),
-            "-",
-            formatar_preco(
-                faixa["maior"]
-            )
-        )
-
-    else:
-
-        precos = extrair_precos(
-            html_text
-        )
-
-        if precos:
-
-            menor = min(precos)
-
-            resultado["preco"] = {
-                "tipo": "unico",
-                "menor": menor,
-                "maior": menor
-            }
-
-            print(
-                "💰 Preço encontrado:",
-                formatar_preco(menor)
-            )
-
-        else:
-
-            print(
-                "💰 Preço: None"
-            )
-
-    # --------------------------------------------------------
-    # FALLBACK: API OFICIAL DE AFILIADOS POR NOME DO PRODUTO
-    # --------------------------------------------------------
-    # Usado quando o link curto não fornece shopId/itemId e o HTML não contém preço.
-    if not resultado.get("preco") and resultado.get("nome"):
-        dados_afiliado = consultar_preco_api_afiliado_por_nome(resultado["nome"])
-        if dados_afiliado:
-            resultado["preco"] = {
-                "tipo": "faixa" if dados_afiliado["maior"] > dados_afiliado["menor"] else "unico",
-                "menor": dados_afiliado["menor"],
-                "maior": dados_afiliado["maior"],
-            }
-            if dados_afiliado.get("desconto"):
-                resultado["desconto"] = dados_afiliado["desconto"]
-            if dados_afiliado.get("imagem") and not resultado.get("imagem"):
-                resultado["imagem"] = dados_afiliado["imagem"]
-                resultado["imagens"] = resultado.get("imagens") or [dados_afiliado["imagem"]]
-            print("✅ Preço obtido pela API oficial de afiliados por correspondência de nome.")
+    # Não escolher o menor valor encontrado no HTML inteiro: a página pode
+    # conter preços de outras variações, recomendações, frete e parcelas.
+    # Sem preço estruturado retornado pela API do item exato, deixamos None.
+    if not resultado.get("preco"):
+        print("💰 Preço não confirmado pela API do item. Não vou adivinhar pelo HTML.")
 
     print(
         "🛍️ Nome:",
@@ -2334,7 +2265,7 @@ def extrair_cupom(texto):
 def texto_preco(preco):
 
     if not preco:
-        return "💰 OFERTA ESPECIAL"
+        return "💰 Consulte o preço atualizado na Shopee"
 
     if preco.get("tipo") == "faixa":
 
@@ -2573,9 +2504,9 @@ def publicar_proximo():
         "imagem"
     )
 
-    preco = produto.get(
-        "preco"
-    )
+    # O preço salvo na fila pode estar desatualizado ou pertencer a outra variação.
+    # Só vale o preço consultado novamente na Shopee no momento da publicação.
+    preco = None
 
     if not link:
 
@@ -2632,11 +2563,7 @@ def publicar_proximo():
     # PREÇO
     # --------------------------------------------------------
 
-    if not preco:
-
-        preco = dados.get(
-            "preco"
-        )
+    preco = dados.get("preco")
 
     # --------------------------------------------------------
     # LINK
@@ -2681,7 +2608,9 @@ def publicar_proximo():
 
     html_produto = dados.get("html") or ""
 
-    desconto = dados.get("desconto") or extrair_desconto(html_produto)
+    desconto = dados.get("desconto")
+    if desconto and not desconto.get("confirmado"):
+        desconto = None
     nota = dados.get("nota") or extrair_avaliacao(html_produto)
     cupom = dados.get("cupom") or extrair_cupom(html_produto)
     parcelas = dados.get("parcelas")
