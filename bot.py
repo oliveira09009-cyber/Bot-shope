@@ -912,101 +912,24 @@ def formatar_preco(numero):
 
 
 def extrair_precos(texto):
-
     if not texto:
         return []
-
     texto = html.unescape(texto)
-
     precos = []
-
-    padroes = [
-        r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
-        r"R\$\s*([0-9]+(?:\.[0-9]{2})?)"
-    ]
-
-    # Ignora parcelamento ("12x R$ 13,87") e frete: nao sao preco do produto.
-    ruido = re.compile(
-        r"(?:\d+\s*x\s*)?"
-        r"(?:R\$\s*[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}"
-        r"|R\$\s*[0-9]+(?:\.[0-9]{2})?)"
-        r"\s*(?:x\b|/mes|por mes|no mes)?"
-        r"\s*(?:de\s*)?(?:frete|parcela|juros)?",
-        re.IGNORECASE
-    )
-
+    padroes = [r"R\$\s*([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})", r"R\$\s*([0-9]+(?:\.[0-9]{2})?)"]
     for padrao in padroes:
-
-        for encontrado in re.finditer(
-            padrao,
-            texto,
-            re.IGNORECASE
-        ):
-
-            valor = encontrado.group(1)
-
-            antes = texto[max(0, encontrado.start() - 12):encontrado.start()]
-
-            depois = texto[encontrado.end():encontrado.end() + 25]
-
-            contexto = (antes + " " + depois).lower()
-
-            if re.search(r"\d+\s*x\s*$", antes.lower()):
-                continue
-
-            if re.search(r"^\s*x\b", depois.lower()):
-                continue
-
-            if "frete" in contexto and "grátis" not in contexto:
-                continue
-
-            if "parcela" in contexto or "juros" in contexto:
-                continue
-
-            numero = converter_preco(
-                valor
-            )
-
+        for valor in re.findall(padrao, texto, re.IGNORECASE):
+            numero = converter_preco(valor)
             if numero is not None:
                 precos.append(numero)
-
-    campos = [
-        "price",
-        "salePrice",
-        "currentPrice",
-        "priceMin",
-        "priceMax",
-        "discountPrice",
-        "finalPrice",
-        "price_min",
-        "price_max"
-    ]
-
+    campos = ["price", "salePrice", "currentPrice", "priceMin", "priceMax", "discountPrice", "finalPrice"]
     for campo in campos:
-
-        padroes_campo = [
-            rf'"{campo}"\s*:\s*"([^"]+)"',
-            rf'"{campo}"\s*:\s*([0-9]+(?:\.[0-9]+)?)'
-        ]
-
-        for padrao in padroes_campo:
-
-            for valor in re.findall(
-                padrao,
-                texto,
-                re.IGNORECASE
-            ):
-
-                numero = converter_preco(
-                    valor
-                )
-
+        for padrao in [rf'"{campo}"\s*:\s*"([^"]+)"', rf'"{campo}"\s*:\s*([0-9]+(?:\.[0-9]+)?)']:
+            for valor in re.findall(padrao, texto, re.IGNORECASE):
+                numero = converter_preco(valor)
                 if numero is not None:
                     precos.append(numero)
-
-    return sorted(
-        set(round(p, 2) for p in precos)
-    )
+    return sorted(set(round(p, 2) for p in precos))
 
 
 def extrair_faixa_preco(texto):
@@ -1765,15 +1688,15 @@ def consultar_api_shopee(shopid, itemid):
 
             dados = _montar_dados_api(d)
 
-            antes = _preco_api_para_reais(d.get("price_before_discount"))
-            agora = _preco_api_para_reais(d.get("price"))
-            if antes is not None and agora is not None and antes > agora:
-                dados["desconto"] = {
-                    "de": antes,
-                    "por": agora,
-                    "pct": int(round((antes - agora) / antes * 100)),
-                    "confirmado": True,
-                }
+            if d.get("price_before_discount") and d.get("price"):
+                antes = d["price_before_discount"] / 100000
+                agora = d["price"] / 100000
+                if antes > agora:
+                    dados["desconto"] = {
+                        "de": antes,
+                        "por": agora,
+                        "pct": int(round((antes - agora) / antes * 100)),
+                    }
 
             rating = d.get("item_rating") or {}
             if rating.get("rating_star"):
@@ -1898,8 +1821,19 @@ def consultar_preco_api_afiliado_por_nome(nome_produto):
             "desconto": None,
             "score": score,
         }
-        # Não estimar preço anterior a partir de percentual.
-        # Só exibiremos "De:" quando a API do item trouxer ambos os preços reais.
+        try:
+            percentual = float(melhor.get("priceDiscountRate") or 0)
+            if 0 < percentual < 100:
+                atual = menor
+                anterior = round(atual / (1 - percentual / 100), 2)
+                if anterior > atual:
+                    resultado["desconto"] = {
+                        "de": anterior, "por": atual,
+                        "pct": int(round(percentual)),
+                        "estimado": True
+                    }
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
         return resultado
     except Exception as erro:
         print("⚠️ Falha na busca de preço por nome:", repr(erro))
@@ -1970,12 +1904,6 @@ def consultar_shopee(link):
                     "menor": dados_api["menor"],
                     "maior": dados_api.get("maior") or dados_api["menor"],
                 }
-            if dados_api.get("desconto", {}).get("confirmado"):
-                resultado["desconto"] = dados_api["desconto"]
-            if dados_api.get("nota"):
-                resultado["nota"] = dados_api["nota"]
-            if dados_api.get("parcelas"):
-                resultado["parcelas"] = dados_api["parcelas"]
             for img in dados_api["imagens"][:8]:
                 if baixar_imagem(img, referer="https://shopee.com.br/"):
                     resultado["imagem"] = img
@@ -2147,11 +2075,61 @@ def consultar_shopee(link):
     # --------------------------------------------------------
     # PREÇO
     # --------------------------------------------------------
-    # Não escolher o menor valor encontrado no HTML inteiro: a página pode
-    # conter preços de outras variações, recomendações, frete e parcelas.
-    # Sem preço estruturado retornado pela API do item exato, deixamos None.
-    if not resultado.get("preco"):
-        print("💰 Preço não confirmado pela API do item. Não vou adivinhar pelo HTML.")
+
+    faixa = extrair_faixa_preco(
+        html_text
+    )
+
+    if faixa:
+
+        resultado["preco"] = {
+            "tipo": "faixa",
+            "menor": faixa["menor"],
+            "maior": faixa["maior"]
+        }
+
+        print(
+            "💰 Faixa encontrada:",
+            formatar_preco(
+                faixa["menor"]
+            ),
+            "-",
+            formatar_preco(
+                faixa["maior"]
+            )
+        )
+
+    else:
+
+        precos = extrair_precos(
+            html_text
+        )
+
+        if precos:
+
+            menor = min(precos)
+
+            resultado["preco"] = {
+                "tipo": "unico",
+                "menor": menor,
+                "maior": menor
+            }
+
+            print(
+                "💰 Preço encontrado:",
+                formatar_preco(menor)
+            )
+
+        else:
+
+            print(
+                "💰 Preço: None"
+            )
+
+    # Não usa busca por nome como fonte de preço:
+    # ela pode retornar outro anúncio ou outra variação.
+    # Se a página/API do próprio item não confirmar o valor,
+    # o anúncio seguirá sem preço em vez de publicar informação errada.
 
     print(
         "🛍️ Nome:",
@@ -2265,7 +2243,7 @@ def extrair_cupom(texto):
 def texto_preco(preco):
 
     if not preco:
-        return "💰 Consulte o preço atualizado na Shopee"
+        return "💰 OFERTA ESPECIAL"
 
     if preco.get("tipo") == "faixa":
 
@@ -2504,8 +2482,8 @@ def publicar_proximo():
         "imagem"
     )
 
-    # O preço salvo na fila pode estar desatualizado ou pertencer a outra variação.
-    # Só vale o preço consultado novamente na Shopee no momento da publicação.
+    # O preço salvo na fila pode estar desatualizado.
+    # Sempre prioriza a consulta feita agora na Shopee.
     preco = None
 
     if not link:
@@ -2608,9 +2586,7 @@ def publicar_proximo():
 
     html_produto = dados.get("html") or ""
 
-    desconto = dados.get("desconto")
-    if desconto and not desconto.get("confirmado"):
-        desconto = None
+    desconto = dados.get("desconto") or extrair_desconto(html_produto)
     nota = dados.get("nota") or extrair_avaliacao(html_produto)
     cupom = dados.get("cupom") or extrair_cupom(html_produto)
     parcelas = dados.get("parcelas")
@@ -3677,3 +3653,4 @@ if __name__ == "__main__":
     )
 
     iniciar_bot()
+
