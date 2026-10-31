@@ -1594,11 +1594,9 @@ def extrair_ids(*urls):
     for u in urls:
         u = unquote(unquote(u or ""))
         for padrao in (
-            # Links canônicos e redirecionamentos usados pela Shopee Brasil.
-            r"/opaanlp/(\d{5,})/(\d{5,})(?:[/?#]|$)",
             r"i\.(\d+)\.(\d+)",
             r"/product/(\d+)/(\d+)",
-            r"/(\d{5,})/(\d{5,})(?:[/?#]|$)",
+            r"/(\d{5,})/(\d{5,})(?:[/?]|$)",
         ):
             m = re.search(padrao, u)
             if m:
@@ -1972,6 +1970,14 @@ def consultar_shopee(link):
         if dados_api and dados_api["nome"]:
             resultado["nome"] = dados_api["nome"]
             resultado["imagens"] = dados_api["imagens"]
+
+            # Preserva metadados da API para a legenda do produto.
+
+            for campo in ("desconto", "nota", "parcelas", "cupom"):
+
+                if dados_api.get(campo) is not None:
+
+                    resultado[campo] = dados_api[campo]
             if dados_api.get("menor") is not None:
                 resultado["preco"] = {
                     "tipo": (
@@ -2016,13 +2022,8 @@ def consultar_shopee(link):
     # --------------------------------------------------------
 
     if not ids:
-        # Alguns redirecionamentos mantêm os IDs somente na URL final,
-        # não no HTML. Verificamos ambos antes de desistir da API.
-        ids = (
-            ids_do_html(html_text)
-            or extrair_ids(url_real, resultado.get("link_resolvido"), link_original)
-        )
-        print("🆔 IDs vindos do HTML/URL final:", ids)
+        ids = ids_do_html(html_text)
+        print("🆔 IDs vindos do HTML:", ids)
 
         if ids:
             try:
@@ -2034,6 +2035,14 @@ def consultar_shopee(link):
             if dados_api and dados_api["nome"]:
                 resultado["nome"] = dados_api["nome"]
                 resultado["imagens"] = dados_api["imagens"]
+
+                # Preserva metadados da API para a legenda do produto.
+
+                for campo in ("desconto", "nota", "parcelas", "cupom"):
+
+                    if dados_api.get(campo) is not None:
+
+                        resultado[campo] = dados_api[campo]
                 if dados_api.get("menor") is not None:
                     resultado["preco"] = {
                         "tipo": (
@@ -2454,6 +2463,7 @@ def enviar_foto_bytes(
     payload = {
         "chat_id": chat_id,
         "caption": legenda,
+        "parse_mode": "HTML",
         "reply_markup": json.dumps(
             teclado,
             ensure_ascii=False
@@ -2512,6 +2522,7 @@ def enviar_foto_file_id(
             "chat_id": chat_id,
             "photo": file_id,
             "caption": legenda,
+            "parse_mode": "HTML",
             "reply_markup": json.dumps(
                 teclado,
                 ensure_ascii=False
@@ -2639,9 +2650,11 @@ def publicar_proximo():
     # PREÇO
     # --------------------------------------------------------
 
-    # O preço deve vir da consulta atual à Shopee. Não reutilizar preço
-    # antigo salvo na fila, pois ele pode estar desatualizado ou ser de outra variação.
-    preco = dados.get("preco")
+    if not preco:
+
+        preco = dados.get(
+            "preco"
+        )
 
     # --------------------------------------------------------
     # LINK
@@ -2693,18 +2706,27 @@ def publicar_proximo():
 
     linhas = []
 
-    if desconto:
-        sufixo_estimado = " (preço anterior estimado)" if desconto.get("estimado") else ""
-        linhas.append(
-            "🏷️ " + formatar_preco(desconto["de"])
-            + " por " + formatar_preco(desconto["por"])
-            + " (-{}%)".format(desconto["pct"]) + sufixo_estimado
-        )
+    # Preço anterior riscado, preço atual em destaque.
+    # Quando o preço anterior for estimado, isso fica explícito.
+    if (
+        isinstance(desconto, dict)
+        and desconto.get("de") is not None
+        and desconto.get("por") is not None
+        and float(desconto["de"]) > float(desconto["por"])
+    ):
+        sufixo_estimado = " <i>(preço anterior estimado)</i>" if desconto.get("estimado") else ""
+        percentual = desconto.get("pct")
+        linhas.append("❌ <s>DE: " + formatar_preco(desconto["de"]) + "</s>")
+        linhas.append("🔥 <b>POR: " + formatar_preco(desconto["por"]) + "</b>")
+        if percentual is not None:
+            linhas.append("🏷️ <b>" + str(int(percentual)) + "% DE DESCONTO</b>" + sufixo_estimado)
+        elif sufixo_estimado:
+            linhas.append(sufixo_estimado.strip())
     else:
-        linhas.append(texto_preco(preco))
+        linhas.append("💰 <b>" + html.escape(texto_preco(preco)) + "</b>")
 
     if parcelas:
-        linhas.append("💳 " + parcelas)
+        linhas.append("💳 " + html.escape(str(parcelas)))
 
     if cupom:
         linhas.append("🎟️ Cupom de " + formatar_preco(cupom) + " OFF")
@@ -2713,18 +2735,18 @@ def publicar_proximo():
         estrelas = int(round(nota))
         linhas.append(
             "⭐ " + ("%.1f" % nota).replace(".", ",")
-            + " " + ("★" * estrelas)
+            + " " + ("★" * max(0, min(estrelas, 5)))
         )
 
     detalhes = "\n".join(linhas)
 
     legenda = (
-        "🔥 ACHADINHO DA SHOPEE 🔥\n\n"
-        "🛍️ " + nome + "\n\n"
+        "🔥 <b>ACHADINHO DA SHOPEE</b> 🔥\n\n"
+        "🛍️ <b>" + html.escape(str(nome)) + "</b>\n\n"
         + detalhes + "\n"
         "⚡ Aproveite enquanto estiver disponível!\n\n"
         "👇 Clique abaixo para conferir:\n\n"
-        "🛒 COMPRAR AGORA"
+        "🛒 <b>COMPRAR AGORA</b>"
     )
 
     teclado = {
@@ -2910,6 +2932,7 @@ def publicar_proximo():
         {
             "chat_id": CHAT_ID,
             "text": legenda,
+            "parse_mode": "HTML",
             "reply_markup": json.dumps(
                 teclado,
                 ensure_ascii=False
