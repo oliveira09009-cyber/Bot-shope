@@ -1,12 +1,18 @@
 
 import os
-from urllib.parse import urlsplit
-from flask import Flask, request, redirect, session, render_template_string
+import html
+from urllib.parse import urlsplit, quote
+from flask import (
+    Flask, request, redirect, session,
+    render_template_string
+)
 import bot
 
 app = Flask(__name__)
 
-app.secret_key = os.environ.get("SECRET_KEY", "chave-temporaria")
+app.secret_key = os.environ.get(
+    "SECRET_KEY", "chave-temporaria"
+)
 
 SENHA = os.environ.get("PANEL_PASSWORD", "")
 
@@ -46,19 +52,55 @@ def validar_link_shopee(link):
         return None
 
 
+def formatar_oferta(dados):
+    preco = dados.get("preco")
+    desconto = dados.get("desconto")
+
+    if isinstance(desconto, dict):
+        de = desconto.get("de")
+        por = desconto.get("por")
+
+        if de is not None and por is not None and float(de) > float(por):
+            percentual = desconto.get("pct")
+
+            texto = (
+                "❌ DE: " + bot.formatar_preco(de) + "\n"
+                "🔥 POR: " + bot.formatar_preco(por)
+            )
+
+            if percentual is not None:
+                texto += f"\n🏷️ {int(percentual)}% DE DESCONTO"
+
+            if desconto.get("estimado"):
+                texto += "\n*Preço anterior estimado*"
+
+            return texto
+
+    if preco:
+        return bot.texto_preco(preco)
+
+    return "💰 Preço não encontrado"
+
+
 HTML = """
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+
 <title>Painel Achados Shopee</title>
 
 <style>
+* {
+    box-sizing: border-box;
+}
+
 body {
-    font-family: Arial;
-    background: #f5f5f5;
-    padding: 20px;
+    font-family: Arial, sans-serif;
+    background: #f3f4f6;
+    padding: 15px;
+    margin: 0;
 }
 
 .card {
@@ -66,46 +108,95 @@ body {
     padding: 22px;
     border-radius: 15px;
     max-width: 500px;
-    margin: 30px auto;
+    margin: 20px auto;
+    box-shadow: 0 3px 15px rgba(0,0,0,0.07);
+}
+
+h2 {
+    text-align: center;
+    color: #ee4d2d;
 }
 
 input, button {
     width: 100%;
     padding: 14px;
-    margin: 10px 0;
-    box-sizing: border-box;
-    border-radius: 8px;
+    margin: 9px 0;
+    border-radius: 9px;
     font-size: 16px;
 }
 
+input {
+    border: 1px solid #ddd;
+}
+
 button {
-    background: #ee4d2d;
-    color: white;
     border: none;
+    color: white;
     font-weight: bold;
+    cursor: pointer;
+}
+
+.btn-consultar {
+    background: #ee4d2d;
+}
+
+.btn-fila {
+    background: #ee4d2d;
+}
+
+.btn-whatsapp {
+    background: #20b85a;
 }
 
 img {
     width: 100%;
     border-radius: 10px;
+    margin-top: 10px;
+}
+
+.preco {
+    background: #fff4ef;
+    border-radius: 10px;
+    padding: 15px;
+    font-size: 19px;
+    font-weight: bold;
+    white-space: pre-line;
+    line-height: 1.7;
 }
 
 .erro {
-    color: red;
+    color: #d00000;
 }
 
 .sucesso {
     color: green;
 }
+
+.link {
+    word-break: break-all;
+    font-size: 13px;
+    color: #666;
+}
+
+hr {
+    border: 0;
+    border-top: 1px solid #eee;
+    margin: 20px 0;
+}
+
+a {
+    color: #666;
+}
 </style>
 </head>
 
 <body>
+
 <div class="card">
 
 <h2>🛍️ Achados da Shopee</h2>
 
-<p>Consulte seus produtos e adicione à fila automática.</p>
+<p>Consulte seus produtos e prepare suas divulgações.</p>
 
 <form method="post" action="/consultar">
 
@@ -114,7 +205,9 @@ name="link"
 placeholder="Cole seu link de afiliado Shopee"
 required>
 
-<button>CONSULTAR PRODUTO</button>
+<button class="btn-consultar">
+CONSULTAR PRODUTO
+</button>
 
 </form>
 
@@ -129,12 +222,14 @@ required>
 <h3>{{ produto.nome }}</h3>
 
 {% if produto.imagem %}
-<img src="{{ produto.imagem }}">
+<img src="{{ produto.imagem }}" alt="Imagem do produto">
 {% endif %}
 
-<p>💰 {{ produto.preco }}</p>
+<div class="preco">{{ produto.oferta }}</div>
 
-<p>🔗 {{ produto.link }}</p>
+{% if produto.link %}
+<p class="link">🔗 {{ produto.link }}</p>
+{% endif %}
 
 <form method="post" action="/adicionar">
 
@@ -143,9 +238,27 @@ type="hidden"
 name="link"
 value="{{ produto.link }}">
 
-<button>ADICIONAR À FILA</button>
+<button class="btn-fila">
+ADICIONAR À FILA
+</button>
 
 </form>
+
+<a
+href="{{ produto.whatsapp }}"
+target="_blank"
+rel="noopener">
+
+<button type="button" class="btn-whatsapp">
+📲 ENVIAR PARA WHATSAPP
+</button>
+
+</a>
+
+<p style="font-size:12px;color:#777;text-align:center">
+O WhatsApp abrirá com a mensagem pronta.
+Você poderá escolher a conversa ou grupo.
+</p>
 
 {% endif %}
 
@@ -153,9 +266,12 @@ value="{{ produto.link }}">
 <h3 class="sucesso">{{ mensagem }}</h3>
 {% endif %}
 
+<p style="text-align:center">
 <a href="/sair">Sair</a>
+</p>
 
 </div>
+
 </body>
 </html>
 """
@@ -205,8 +321,6 @@ def consultar():
             erro="Link Shopee inválido. Confira o endereço."
         )
 
-    # Tenta utilizar a normalização do bot.
-    # Se ela rejeitar um link curto válido, preserva o original.
     try:
         link_normalizado = bot.normalizar_link(link)
 
@@ -228,22 +342,41 @@ def consultar():
             erro="Erro ao consultar produto: " + str(erro)
         )
 
-    preco = dados.get("preco")
+    nome = dados.get("nome") or "Produto Shopee"
 
-    if preco:
-        try:
-            preco_texto = bot.texto_preco(preco)
-        except Exception:
-            preco_texto = str(preco)
-    else:
-        preco_texto = "Preço não encontrado"
+    imagem = dados.get("imagem")
+
+    oferta = formatar_oferta(dados)
+
+    link_produto = (
+        dados.get("link_resolvido")
+        or link
+    )
 
     produto = {
-        "nome": dados.get("nome") or "Produto Shopee",
-        "imagem": dados.get("imagem"),
-        "preco": preco_texto,
-        "link": link
+        "nome": nome,
+        "imagem": imagem,
+        "preco": dados.get("preco"),
+        "desconto": dados.get("desconto"),
+        "oferta": oferta,
+        "link": link,
+        "link_resolvido": link_produto
     }
+
+    # Monta mensagem para compartilhar no WhatsApp.
+    mensagem_whatsapp = (
+        "🔥 ACHADINHO DA SHOPEE 🔥\n\n"
+        "🛍️ " + nome + "\n\n"
+        + oferta + "\n\n"
+        "⚡ Aproveite enquanto estiver disponível!\n\n"
+        "🛒 Confira aqui:\n"
+        + link_produto
+    )
+
+    produto["whatsapp"] = (
+        "https://wa.me/?text="
+        + quote(mensagem_whatsapp)
+    )
 
     session["produto"] = produto
 
@@ -277,9 +410,12 @@ def adicionar():
 
         imagem = dados.get("imagem") or produto["imagem"]
 
-        preco = dados.get("preco")
+        preco = dados.get("preco") or produto.get("preco")
 
-        resolvido = dados.get("link_resolvido")
+        resolvido = (
+            dados.get("link_resolvido")
+            or produto.get("link_resolvido")
+        )
 
         ok, posicao = bot.adicionar_na_fila(
             nome,
@@ -322,3 +458,8 @@ def sair():
 def health():
 
     return "OK", 200
+
+
+if __name__ == "__main__":
+    porta = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=porta)
