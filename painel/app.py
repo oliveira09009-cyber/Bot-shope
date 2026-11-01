@@ -1,6 +1,5 @@
 
 import os
-import html
 from urllib.parse import urlsplit, quote
 from flask import (
     Flask, request, redirect, session,
@@ -60,26 +59,33 @@ def formatar_oferta(dados):
         de = desconto.get("de")
         por = desconto.get("por")
 
-        if de is not None and por is not None and float(de) > float(por):
-            percentual = desconto.get("pct")
+        if de is not None and por is not None:
+            try:
+                de = float(de)
+                por = float(por)
+            except (TypeError, ValueError):
+                de = por = None
 
-            texto = (
-                "❌ DE: " + bot.formatar_preco(de) + "\n"
-                "🔥 POR: " + bot.formatar_preco(por)
-            )
+            if de and por and de > por:
+                percentual = desconto.get("pct")
 
-            if percentual is not None:
-                texto += f"\n🏷️ {int(percentual)}% DE DESCONTO"
+                texto = (
+                    "❌ DE: " + bot.formatar_preco(de) + "\n"
+                    "🔥 POR: " + bot.formatar_preco(por)
+                )
 
-            if desconto.get("estimado"):
-                texto += "\n*Preço anterior estimado*"
+                if percentual is not None:
+                    texto += f"\n🏷️ {int(percentual)}% DE DESCONTO"
 
-            return texto
+                if desconto.get("estimado"):
+                    texto += "\nPreço anterior estimado"
+
+                return texto
 
     if preco:
         return bot.texto_preco(preco)
 
-    return "💰 Preço não encontrado"
+    return "💰 Preço não encontrado na consulta."
 
 
 HTML = """
@@ -88,7 +94,6 @@ HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-
 <title>Painel Achados Shopee</title>
 
 <style>
@@ -117,7 +122,7 @@ h2 {
     color: #ee4d2d;
 }
 
-input, button {
+input, button, .botao {
     width: 100%;
     padding: 14px;
     margin: 9px 0;
@@ -129,18 +134,17 @@ input {
     border: 1px solid #ddd;
 }
 
-button {
+button, .botao {
+    display: block;
     border: none;
     color: white;
     font-weight: bold;
+    text-align: center;
+    text-decoration: none;
     cursor: pointer;
 }
 
-.btn-consultar {
-    background: #ee4d2d;
-}
-
-.btn-fila {
+.btn-consultar, .btn-fila {
     background: #ee4d2d;
 }
 
@@ -245,19 +249,16 @@ ADICIONAR À FILA
 </form>
 
 <a
+class="botao btn-whatsapp"
 href="{{ produto.whatsapp }}"
 target="_blank"
-rel="noopener">
-
-<button type="button" class="btn-whatsapp">
+rel="noopener noreferrer">
 📲 ENVIAR PARA WHATSAPP
-</button>
-
 </a>
 
 <p style="font-size:12px;color:#777;text-align:center">
 O WhatsApp abrirá com a mensagem pronta.
-Você poderá escolher a conversa ou grupo.
+Escolha o grupo ou contato e toque em enviar.
 </p>
 
 {% endif %}
@@ -312,7 +313,6 @@ def consultar():
         return redirect("/")
 
     link_original = request.form.get("link", "").strip()
-
     link = validar_link_shopee(link_original)
 
     if not link:
@@ -343,9 +343,7 @@ def consultar():
         )
 
     nome = dados.get("nome") or "Produto Shopee"
-
     imagem = dados.get("imagem")
-
     oferta = formatar_oferta(dados)
 
     link_produto = (
@@ -363,10 +361,9 @@ def consultar():
         "link_resolvido": link_produto
     }
 
-    # Monta mensagem para compartilhar no WhatsApp.
     mensagem_whatsapp = (
         "🔥 ACHADINHO DA SHOPEE 🔥\n\n"
-        "🛍️ " + nome + "\n\n"
+        "🛍️ " + str(nome) + "\n\n"
         + oferta + "\n\n"
         "⚡ Aproveite enquanto estiver disponível!\n\n"
         "🛒 Confira aqui:\n"
@@ -394,7 +391,10 @@ def adicionar():
 
     produto = session.get("produto")
 
-    if not produto or produto["link"] != request.form.get("link"):
+    if (
+        not produto
+        or produto["link"] != request.form.get("link")
+    ):
         return render_template_string(
             HTML,
             erro="Consulte novamente o produto."
@@ -407,10 +407,10 @@ def adicionar():
             dados = {}
 
         nome = dados.get("nome") or produto["nome"]
+        imagem = dados.get("imagem") or produto.get("imagem")
 
-        imagem = dados.get("imagem") or produto["imagem"]
-
-        preco = dados.get("preco") or produto.get("preco")
+        # Não reutiliza preço antigo se a consulta atual falhar.
+        preco = dados.get("preco")
 
         resolvido = (
             dados.get("link_resolvido")
@@ -450,7 +450,6 @@ def adicionar():
 def sair():
 
     session.clear()
-
     return redirect("/")
 
 
