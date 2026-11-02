@@ -1,9 +1,10 @@
 
 import os
 from urllib.parse import urlsplit, quote
+from io import BytesIO
 from flask import (
     Flask, request, redirect, session,
-    render_template_string
+    render_template_string, send_file
 )
 import bot
 
@@ -248,18 +249,52 @@ ADICIONAR À FILA
 
 </form>
 
-<a
-class="botao btn-whatsapp"
-href="{{ produto.whatsapp }}"
-target="_blank"
-rel="noopener noreferrer">
-📲 ENVIAR PARA WHATSAPP
-</a>
+<button
+class="btn-whatsapp"
+type="button"
+onclick="compartilharWhatsApp()">
+📲 ENVIAR PARA WHATSAPP BUSINESS
+</button>
 
-<p style="font-size:12px;color:#777;text-align:center">
-O WhatsApp abrirá com a mensagem pronta.
-Escolha o grupo ou contato e toque em enviar.
+<p id="status-compartilhamento" style="font-size:12px;color:#777;text-align:center">
+No celular, abrirá o compartilhamento com a foto e a mensagem.
+Escolha WhatsApp Business, depois o grupo ou contato e toque em enviar.
 </p>
+
+<script>
+async function compartilharWhatsApp() {
+    const status = document.getElementById('status-compartilhamento');
+    const mensagem = {{ produto.whatsapp_texto|tojson }};
+    const temImagem = {{ 'true' if produto.imagem else 'false' }};
+
+    try {
+        if (temImagem && navigator.share && navigator.canShare) {
+            status.textContent = 'Preparando a foto do produto...';
+            const resposta = await fetch('/imagem-compartilhar');
+            if (!resposta.ok) throw new Error('Não foi possível preparar a foto.');
+
+            const blob = await resposta.blob();
+            const tipo = blob.type || 'image/jpeg';
+            const extensao = tipo.includes('png') ? 'png' : (tipo.includes('webp') ? 'webp' : 'jpg');
+            const arquivo = new File([blob], 'produto-shopee.' + extensao, {type: tipo});
+            const dados = { files: [arquivo], text: mensagem, title: 'Achadinho da Shopee' };
+
+            if (navigator.canShare(dados)) {
+                await navigator.share(dados);
+                status.textContent = 'Compartilhamento aberto. Selecione WhatsApp Business e o grupo.';
+                return;
+            }
+        }
+    } catch (erro) {
+        if (erro.name === 'AbortError') return;
+        console.log('Compartilhamento com foto indisponível:', erro);
+    }
+
+    // Alternativa compatível: abre o WhatsApp com o texto e o link prontos.
+    window.location.href = {{ produto.whatsapp|tojson }};
+    status.textContent = 'Mensagem pronta. A foto poderá ser anexada manualmente no WhatsApp.';
+}
+</script>
 
 {% endif %}
 
@@ -370,6 +405,7 @@ def consultar():
         + link_produto
     )
 
+    produto["whatsapp_texto"] = mensagem_whatsapp
     produto["whatsapp"] = (
         "https://wa.me/?text="
         + quote(mensagem_whatsapp)
@@ -381,6 +417,52 @@ def consultar():
         HTML,
         produto=produto
     )
+
+
+@app.route("/imagem-compartilhar", methods=["GET"])
+def imagem_compartilhar():
+    """Entrega a imagem consultada para o compartilhamento nativo do celular."""
+    if not session.get("autorizado"):
+        return "Acesso não autorizado.", 401
+
+    produto = session.get("produto") or {}
+    url = produto.get("imagem")
+    if not url:
+        return "Imagem não disponível.", 404
+
+    try:
+        partes = urlsplit(url)
+        host = (partes.hostname or "").lower()
+        if not (host.endswith("susercontent.com") or host.endswith("shopee.com.br")):
+            return "Origem da imagem não permitida.", 400
+
+        resposta = bot.requests.get(
+            url,
+            headers=getattr(bot, "HEADERS", {}),
+            timeout=25,
+            allow_redirects=True
+        )
+        resposta.raise_for_status()
+
+        conteudo = resposta.content
+        if not bot.imagem_valida_bytes(conteudo):
+            return "O arquivo recebido não é uma imagem válida.", 502
+
+        content_type = resposta.headers.get("Content-Type", "image/jpeg").split(";")[0]
+        if not content_type.startswith("image/"):
+            content_type = "image/jpeg"
+
+        extensao = "png" if "png" in content_type else ("webp" if "webp" in content_type else "jpg")
+        return send_file(
+            BytesIO(conteudo),
+            mimetype=content_type,
+            as_attachment=True,
+            download_name="produto-shopee." + extensao,
+            max_age=0
+        )
+    except Exception as erro:
+        print("Erro preparando imagem para WhatsApp:", repr(erro))
+        return "Não foi possível baixar a imagem do produto.", 502
 
 
 @app.route("/adicionar", methods=["POST"])
