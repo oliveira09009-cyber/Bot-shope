@@ -1,5 +1,6 @@
 
 import os
+import re
 from urllib.parse import urlsplit, quote
 from io import BytesIO
 from flask import (
@@ -50,6 +51,39 @@ def validar_link_shopee(link):
 
     except Exception:
         return None
+
+
+def extrair_dados_texto(texto):
+    """Extrai link, nome e preço de mensagens compartilhadas pela Shopee."""
+    texto = (texto or "").strip()
+    encontrados = re.findall(r"https?://[^\s<>\"']+", texto, flags=re.IGNORECASE)
+    link = None
+    for candidato in encontrados:
+        candidato = candidato.rstrip(".,);]}")
+        link = validar_link_shopee(candidato)
+        if link:
+            break
+
+    nome = None
+    # Formato comum: 'Dê uma olhada em NOME por R$56,90. Compre na Shopee...'
+    m_nome = re.search(
+        r"(?:d[eê] uma olhada em|olha s[oó])\s+(.+?)\s+por\s+R\$",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+    if m_nome:
+        nome = re.sub(r"\s+", " ", m_nome.group(1)).strip(" .,!\n\r")
+
+    preco = None
+    m_preco = re.search(r"\bpor\s+R\$\s*([0-9.]+,[0-9]{2}|[0-9]+\.[0-9]{2})", texto, flags=re.IGNORECASE)
+    if m_preco:
+        valor = m_preco.group(1).replace(".", "").replace(",", ".")
+        try:
+            preco = float(valor)
+        except ValueError:
+            preco = None
+
+    return link, nome, preco
 
 
 def formatar_oferta(dados):
@@ -123,7 +157,7 @@ h2 {
     color: #ee4d2d;
 }
 
-input, button, .botao {
+input, textarea, button, .botao {
     width: 100%;
     padding: 14px;
     margin: 9px 0;
@@ -131,8 +165,18 @@ input, button, .botao {
     font-size: 16px;
 }
 
-input {
+input, textarea {
     border: 1px solid #ddd;
+}
+
+textarea {
+    width: 100%;
+    min-height: 105px;
+    padding: 14px;
+    margin: 9px 0;
+    border-radius: 9px;
+    font-size: 16px;
+    font-family: Arial, sans-serif;
 }
 
 button, .botao {
@@ -205,10 +249,10 @@ a {
 
 <form method="post" action="/consultar">
 
-<input
+<textarea
 name="link"
-placeholder="Cole seu link de afiliado Shopee"
-required>
+placeholder="Cole o link da Shopee ou a mensagem inteira, por exemplo: Dê uma olhada em Produto por R$ 56,90..."
+required></textarea>
 
 <button class="btn-consultar">
 CONSULTAR PRODUTO
@@ -347,8 +391,9 @@ def consultar():
     if not session.get("autorizado"):
         return redirect("/")
 
-    link_original = request.form.get("link", "").strip()
-    link = validar_link_shopee(link_original)
+    texto_original = request.form.get("link", "").strip()
+    link_extraido, nome_informado, preco_informado = extrair_dados_texto(texto_original)
+    link = link_extraido or validar_link_shopee(texto_original)
 
     if not link:
         return render_template_string(
@@ -377,9 +422,11 @@ def consultar():
             erro="Erro ao consultar produto: " + str(erro)
         )
 
-    nome = dados.get("nome") or "Produto Shopee"
+    nome = dados.get("nome") or nome_informado or "Produto Shopee"
     imagem = dados.get("imagem")
     oferta = formatar_oferta(dados)
+    if not dados.get("preco") and not dados.get("desconto") and preco_informado is not None:
+        oferta = "💰 PREÇO INFORMADO NA MENSAGEM: " + bot.formatar_preco(preco_informado)
 
     link_produto = (
         dados.get("link_resolvido")
